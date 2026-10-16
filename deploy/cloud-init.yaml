@@ -1,0 +1,72 @@
+#cloud-config
+# Cloud-init for the Cadence backend VM (Step 7, Path A).
+#
+# Pass it with --cloud-init-user-data-file deploy/cloud-init.yaml. It installs
+# Docker and Caddy, lays down the systemd unit, and starts the container.
+#
+# IMPORTANT: fill in CADENCE_IMAGE below with your pushed image BEFORE creating
+# the VM, or the service will fail its first pull. The key and token are written
+# as REPLACE_ME on purpose: edit /etc/cadence.env on the box (or here, if you
+# accept that instance metadata can be read by anyone with project access) and
+# then `sudo systemctl restart cadence`.
+#
+# Nothing secret belongs in a file that is committed. This one is a template.
+
+package_update: true
+packages:
+  - docker.io
+  - caddy
+  - jq
+
+write_files:
+  - path: /etc/cadence.env
+    owner: root:root
+    permissions: '0600'
+    content: |
+      # Root-only. The backend reads these from the environment.
+      CADENCE_IMAGE=REPLACE_ME
+      NEBIUS_API_KEY=REPLACE_ME
+      CADENCE_TOKEN=REPLACE_ME
+      # Optional (Step 9): web search for the general agent loop. Leave it out and
+      # the loop still answers, reporting what it could not check.
+      # EXA_API_KEY=REPLACE_ME
+      CADENCE_HOST=0.0.0.0
+      CADENCE_PORT=8787
+
+  - path: /etc/systemd/system/cadence.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Cadence study-assistant backend
+      After=docker.service network-online.target
+      Wants=network-online.target
+      Requires=docker.service
+
+      [Service]
+      EnvironmentFile=/etc/cadence.env
+      ExecStartPre=-/usr/bin/docker pull ${CADENCE_IMAGE}
+      ExecStart=/usr/bin/docker run --rm --name cadence \
+          -p 127.0.0.1:8787:8787 \
+          --env-file /etc/cadence.env \
+          -v /srv/cadence/memory:/app/memory \
+          -v /srv/cadence/progress:/app/progress \
+          -v /srv/cadence/logs:/app/backend/logs \
+          ${CADENCE_IMAGE}
+      ExecStop=/usr/bin/docker stop cadence
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # The student's data lives on the VM's disk, outside the container, so a
+  # redeploy never touches it.
+  - mkdir -p /srv/cadence/memory /srv/cadence/progress /srv/cadence/logs
+  - chmod 700 /srv/cadence
+  - systemctl daemon-reload
+  - systemctl enable cadence
+  # Not started on purpose: /etc/cadence.env still says REPLACE_ME. Fill it in,
+  # then `sudo systemctl start cadence`.
+  - echo "Cadence installed. Edit /etc/cadence.env, then: sudo systemctl start cadence"

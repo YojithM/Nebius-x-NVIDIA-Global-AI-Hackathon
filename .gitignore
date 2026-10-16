@@ -1,0 +1,49 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node / extension
+node_modules/
+dist/
+build/
+*.zip
+
+# Local runtime state (memory, logs, sqlite)
+data/
+*.db
+*.sqlite3
+*.log
+*.pid
+
+# The backend's own logs. The action log is a feature - the server appends one
+# JSON line per event and /health reports the memory it holds - but the file is
+# runtime output, not source, and the directory is created on demand, so a clone
+# without it is complete.
+backend/logs/
+
+# The student's own data: notes in memory/, quiz record in progress/. The app
+# writes these as it is used and recreates either directory on first write, so a
+# clone with neither of them is complete. memory/README.md documents the file
+# format and stays tracked - which is also why these are `dir/*` rather than
+# `dir/`: ignoring a directory would hide the README inside it too.
+memory/*
+!memory/README.md
+progress/*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

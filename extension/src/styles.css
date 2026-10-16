@@ -1,0 +1,1006 @@
+:root {
+  --bg: #12121a;
+  --surface: #1b1b26;
+  --surface-2: #23232f;
+  --text: #ececf3;
+  --muted: #9a9ab0;
+  --accent: #7d7df5;
+  --accent-strong: #5b5bd6;
+  --danger: #ff8080;
+  --ok: #6ee7a8;
+  --radius: 14px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f7f7fb;
+    --surface: #ffffff;
+    --surface-2: #eeeef6;
+    --text: #1a1a24;
+    --muted: #66667d;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px;
+  gap: 14px;
+}
+
+/* The `hidden` attribute loses to `display: flex`, and every layout rule in this
+   file sets a display - so without this the Today view keeps its space while the
+   Memory tab is open. */
+[hidden] {
+  display: none !important;
+}
+
+/* ---------- tabs ---------- */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.tab {
+  flex: 1;
+  padding: 6px 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.tab-on {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ---------- memory ---------- */
+
+.memory {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.memory-topic h2 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.memory-topic .count {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.7;
+}
+
+.memory-topic ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.memory-topic li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.memory-topic .fact {
+  flex: 1;
+}
+
+.memory-topic .added {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  padding-top: 2px;
+}
+
+.forget {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.forget:hover:not(:disabled) {
+  color: var(--danger);
+}
+
+.retry {
+  align-self: center;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.memory-foot {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--surface);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.memory-foot code {
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+/* ---------- progress ---------- */
+
+.progress {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.progress section h2,
+.weak-topics h2,
+.declared-weak h2 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.progress-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.quiz-active {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+  border-left: 2px solid var(--accent);
+}
+
+.quiz-active p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.weak-topics ul,
+.declared-weak ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.weak-topics li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 12.5px;
+}
+
+.weak-topics .topic {
+  flex: 1;
+  text-transform: capitalize;
+}
+
+.weak-topics .accuracy {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.weak-topics .evidence,
+.weak-topics .hint {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.weak-topics .hint,
+.progress .hint {
+  margin: 6px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.weak-topics .declared {
+  font-size: 9.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.declared-weak li {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface);
+  font-size: 12.5px;
+}
+
+.quiz {
+  position: relative;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.quiz .status {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.75;
+}
+
+/* Room for the × in the corner, so the status label and the delete button do
+   not render on top of each other. */
+.quiz h2 {
+  padding-right: 18px;
+}
+
+.quiz-meta {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.quiz .forget {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+.quiz details summary {
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.quiz ol {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.quiz li {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.quiz .q {
+  margin: 0;
+}
+
+.quiz .a,
+.quiz .expected {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.quiz .verdict {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+.quiz .verdict-correct {
+  color: var(--ok);
+}
+
+.quiz .verdict-incorrect {
+  color: var(--danger);
+}
+
+.quiz .verdict-skipped,
+.quiz .verdict-unclear,
+.quiz .verdict-unanswered {
+  color: var(--muted);
+}
+
+.clear-all,
+.clear-confirm {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.clear-all {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 10.5px;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.clear-all:hover {
+  color: var(--danger);
+}
+
+.quiz-line {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* ---------- the brief (Step 8) ---------- */
+
+.brief {
+  margin: 10px 12px 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface);
+  /* A tinted edge rather than a solid fill: the brief sits at the top of a screen
+     the student is working in, and it should read as a note, not an alarm. */
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.brief h2 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.brief .count {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.7;
+}
+
+.brief-headline {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* Overdue is the one thing here that is allowed to look like a problem. */
+.brief-urgent {
+  color: var(--danger);
+}
+
+.brief-nudges {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12.5px;
+}
+
+.brief-nudges li {
+  padding-left: 11px;
+  position: relative;
+}
+
+.brief-nudges li::before {
+  content: '·';
+  position: absolute;
+  left: 0;
+  color: var(--muted);
+}
+
+.brief-line {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.brief-muted {
+  color: var(--muted);
+}
+
+/* A label sitting above its own list: tightening the gap keeps the two from
+   reading as separate items in a stack. Weak topics are the student's own
+   sentences, so they stay in the normal text colour rather than the muted grey
+   used for the quiet lines. */
+.brief-label {
+  margin-bottom: 0;
+}
+
+.brief-label + .brief-topics {
+  margin-top: 3px;
+}
+
+.brief-foot {
+  margin: 8px 0 0;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+/* ---------- header ---------- */
+
+.panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.panel-header h1 {
+  margin: 0;
+  font-size: 19px;
+  letter-spacing: -0.01em;
+}
+
+.subtitle {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.backend {
+  flex: none;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--surface-2);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.backend-ok {
+  color: var(--ok);
+}
+
+.backend-down {
+  color: var(--danger);
+}
+
+/* ---------- transcript ---------- */
+
+.transcript {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 2px;
+}
+
+.empty {
+  color: var(--muted);
+  font-size: 13.5px;
+  margin: auto 0;
+  text-align: center;
+  padding: 0 12px;
+}
+
+.turn {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  animation: rise 0.18s ease-out;
+}
+
+.turn-you {
+  background: var(--surface-2);
+}
+
+/* While you're still speaking the text is provisional, so it looks provisional. */
+.turn-interim {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.turn p {
+  margin: 3px 0 0;
+  white-space: pre-wrap;
+}
+
+/* ---------- citations (Step 11) ---------- */
+
+/* The pages a searched answer came from. Every link here is built from the
+   backend's `sources` - what the search tool returned - so a URL the model
+   typed into its reply stays plain text. */
+.sources {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sources li {
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.sources a,
+.turn p .cite {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.sources a:hover,
+.turn p .cite:hover {
+  text-decoration: underline;
+}
+
+/* The marker in the prose, raised like a footnote so it reads as a pointer and
+   not as part of the sentence. */
+.turn p .cite {
+  font-size: 11.5px;
+  vertical-align: super;
+  padding: 0 1px;
+}
+
+/* ---------- a drafted skill file (Step 11) ---------- */
+
+/* The whole file, before it exists. Monospace and scroll-capped on purpose: this
+   is source text the student is being asked to approve, and it should look like
+   the file it is rather than like something we wrote. */
+.draft {
+  margin-top: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius: 10px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.draft-head {
+  margin: 0;
+  padding: 7px 9px;
+  font-size: 11px;
+  color: var(--muted);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  overflow-wrap: anywhere;
+}
+
+.draft-head code {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.draft-text {
+  margin: 0;
+  padding: 9px;
+  max-height: 220px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.who {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.meta {
+  display: block;
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+/* The router's decision, shown rather than buried: this is how you check at a
+   glance that "what is a ketone?" took the general path while "break lab report
+   3" took a skill. */
+.meta .skill {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text);
+}
+
+/* A different colour when WE chose, not the model — a fallback is not a
+   routing decision and should not look like one. */
+.meta .skill-server {
+  background: color-mix(in srgb, var(--danger) 20%, transparent);
+}
+
+.meta .confirm {
+  margin-right: 6px;
+  color: var(--danger);
+}
+
+/* Over the per-request cost ceiling (Step 11). Red like a problem and not like an
+   error, because nothing was stopped - the detail, including both numbers, is in
+   the tooltip rather than in a line that would be read aloud. */
+.meta .cost-over {
+  color: var(--danger);
+  cursor: help;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* ---------- error ---------- */
+
+.error {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
+/* ---------- mic ---------- */
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.mic {
+  position: relative;
+  width: 116px;
+  height: 116px;
+  border: none;
+  border-radius: 50%;
+  background: linear-gradient(160deg, var(--accent), var(--accent-strong));
+  color: white;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 10px 30px -10px var(--accent-strong);
+  transition: transform 0.12s ease;
+}
+
+.mic:hover {
+  transform: scale(1.03);
+}
+
+.mic:active {
+  transform: scale(0.97);
+}
+
+.mic:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 4px;
+}
+
+/* Expanding rings — only while actually listening. */
+.pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  opacity: 0;
+}
+
+.status-listening .pulse {
+  animation: pulse 1.8s ease-out infinite;
+}
+
+.status-listening .pulse-2 {
+  animation-delay: 0.9s;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(1.75);
+    opacity: 0;
+  }
+}
+
+/* Breathing while a turn is in flight. */
+.status-thinking .mic {
+  animation: breathe 1.4s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  50% {
+    transform: scale(0.94);
+    filter: brightness(1.15);
+  }
+}
+
+.status-speaking .mic {
+  animation: talk 0.7s ease-in-out infinite alternate;
+}
+
+@keyframes talk {
+  from {
+    box-shadow: 0 10px 30px -10px var(--accent-strong);
+  }
+  to {
+    box-shadow: 0 0 0 12px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+}
+
+.status-text {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* The listening rings scale to 1.75x the button and would otherwise paint over
+   the status line and buttons below it. Lift those above the rings. */
+.status-text,
+.secondary {
+  position: relative;
+  z-index: 1;
+}
+
+.secondary {
+  display: flex;
+  gap: 8px;
+}
+
+.secondary button {
+  background: var(--surface-2);
+  color: var(--text);
+  border: none;
+  border-radius: 9px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.secondary button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The page-read arm. Armed is a *state*, not a hover, and it has to be visible
+   from across the room — it means the next question sends the page's text. */
+.arm.arm-on {
+  background: var(--accent);
+  color: #fff;
+}
+
+.armed {
+  margin: 0;
+  padding: 8px 11px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+/* A page we could not read is not an error: the turn still ran. So it is muted
+   rather than red — the same courtesy the Memory tab makes for an empty topic. */
+.notice {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* ---------- cost line (Step 10) ---------- */
+
+/* What the backend has spent, and what the demo visitor has left. Deliberately
+   quiet: it is the answer to a question you ask occasionally, not the headline. */
+.cost-line {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.cost-line .cost {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- answering a question the backend asked (Step 10) ---------- */
+
+.meta .approval {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+}
+
+.meta .approval button {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.meta .approve {
+  background: var(--accent);
+  color: #fff;
+}
+
+.meta .decline {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.meta .approval button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.meta .approval-note {
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+/* ---------- the action log (Step 10) ---------- */
+
+.log {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.log-head h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.log .hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.log-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.log-lines li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.log-ts {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.log-event {
+  font-weight: 600;
+}
+
+.log-detail {
+  color: var(--muted);
+}
+
+.log-note {
+  flex-basis: 100%;
+  font-size: 10.5px;
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-listening .pulse,
+  .status-thinking .mic,
+  .status-speaking .mic,
+  .turn {
+    animation: none;
+  }
+}

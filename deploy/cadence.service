@@ -1,0 +1,50 @@
+# Cadence backend on a Compute VM — install to /etc/systemd/system/cadence.service
+#
+# Everything secret comes from /etc/cadence.env (root-only, mode 600), so the key
+# and the token are never in the repo, never in a unit file, and never in the
+# output of `systemctl show`. That file must contain at least:
+#
+#   CADENCE_IMAGE=cr.<region>.nebius.cloud/<registry>/cadence-backend:0.4.0
+#   NEBIUS_API_KEY=...
+#   CADENCE_TOKEN=...
+#   CADENCE_HOST=0.0.0.0
+#   CADENCE_PORT=8787
+#
+# Optional, for the general agent loop's web-search tool (Step 9). Without it the
+# loop still answers and says what it could not check; /health reports
+# tools.search.configured: false. EXA_API_KEY or TAVILY_API_KEY, Exa first.
+#   EXA_API_KEY=...
+#
+# The container port is published ONLY on the loopback address: Caddy terminates
+# TLS on 443 and proxies to it, so port 8787 is never directly reachable from the
+# internet. See deploy/Caddyfile.
+
+[Unit]
+Description=Cadence study-assistant backend
+Documentation=https://github.com/YojithM/Nebius-x-NVIDIA-Global-AI-Hackathon
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+EnvironmentFile=/etc/cadence.env
+
+# Pull on start so a redeploy is "push a new tag, edit CADENCE_IMAGE, restart".
+# The leading `-` means a failed pull does not stop the unit if a local image
+# already exists.
+ExecStartPre=-/usr/bin/docker pull ${CADENCE_IMAGE}
+
+ExecStart=/usr/bin/docker run --rm --name cadence \
+    -p 127.0.0.1:8787:8787 \
+    --env-file /etc/cadence.env \
+    -v /srv/cadence/memory:/app/memory \
+    -v /srv/cadence/progress:/app/progress \
+    -v /srv/cadence/logs:/app/backend/logs \
+    ${CADENCE_IMAGE}
+
+ExecStop=/usr/bin/docker stop cadence
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

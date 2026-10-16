@@ -1,0 +1,53 @@
+{
+  "_comment": "Single source of truth for model tiers. Change a tier's model here and the whole app follows.",
+  "_verified_against": "Verified 2026-10-14 against GET /v1/models on the live account. Exact-match, case-sensitive: a mis-cased ID returns HTTP 404 on the call. NOTE: the model ID published in Nebius docs for Nano (nvidia/nvidia-nemotron-3-nano-30b-a3b) does not exist - the live ID is nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B. Run spike/step0_spike.py --list-models to re-verify (free).",
+  "_thinking_note": "These Nemotron models are REASONING models: they emit a reasoning trace before the answer, and those tokens are billed as output. Measured on this account, enabling reasoning on Nano cost 229 output tokens and 2.5s for a 38-token JSON routing decision - and at max_tokens=300 the reasoning often consumed the whole budget, returning empty content and breaking the router. 'thinking': false sends chat_template_kwargs.enable_thinking=false, which cut that to 38 tokens and 1.1s. Keep thinking ON for explanations (quality) and OFF for classification (waste).",
+  "provider": {
+    "name": "Nebius Token Factory",
+    "base_url": "https://api.tokenfactory.nebius.com/v1",
+    "chat_completions_path": "/chat/completions",
+    "models_path": "/models",
+    "api_key_env": "NEBIUS_API_KEY",
+    "docs": "https://docs.tokenfactory.nebius.com/quickstart",
+    "pricing_page": "https://tokenfactory.nebius.com/organization/prices"
+  },
+  "tiers": {
+    "nano": {
+      "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+      "display_name": "Nemotron 3 Nano 30B A3B",
+      "use_for": "routing, tab actions, short replies, JSON-shaped classification",
+      "thinking": false,
+      "price_in_per_1m": 0.06,
+      "price_out_per_1m": 0.24,
+      "context_tokens": 262144
+    },
+    "super": {
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "display_name": "Nemotron 3 Super 120B A12B",
+      "use_for": "explanations, quizzes, planning (default tier)",
+      "thinking": true,
+      "price_in_per_1m": 0.3,
+      "price_out_per_1m": 0.9,
+      "context_tokens": 262144
+    },
+    "ultra": {
+      "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+      "display_name": "Nemotron 3 Ultra 550B A55B",
+      "use_for": "hard reasoning only: readiness estimates, study-time allocation, tough concept explanations",
+      "thinking": true,
+      "price_in_per_1m": 1.0,
+      "price_out_per_1m": 3.0,
+      "context_tokens": 1048576
+    }
+  },
+  "default_tier": "super",
+  "budgets": {
+    "_note": "What each of these actually does, since a ceiling nobody checks reads like a safeguard: max_steps_per_request bounds a whole request, tools included (Step 9); max_requests_per_session_demo caps one demo visitor, charged before anything is routed (Step 10); warn_over_usd_per_request warns on the turn that crosses it - the sentence is appended to the reply so it is heard, nothing is blocked, a missing or unusable value falls back to 0.05 and an explicit 0 turns it off (Step 11); total_credit_usd is *reported* and not enforced, so nothing stops spending when it runs out; max_output_tokens_per_request is sent as max_tokens on every call; max_input_tokens_per_request is read by nothing at all - the prompt is bounded in pieces (page text, tool results) rather than as a total.",
+    "max_steps_per_request": 6,
+    "max_output_tokens_per_request": 900,
+    "max_input_tokens_per_request": 24000,
+    "max_requests_per_session_demo": 20,
+    "total_credit_usd": 25.0,
+    "warn_over_usd_per_request": 0.05
+  }
+}

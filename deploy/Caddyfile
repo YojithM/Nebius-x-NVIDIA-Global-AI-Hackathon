@@ -1,0 +1,21 @@
+# Caddyfile for the Cadence backend VM — install to /etc/caddy/Caddyfile
+#
+# Caddy obtains and renews a Let's Encrypt certificate automatically, which is
+# why this is three lines instead of a certbot setup. Replace the hostname with
+# yours, and point a DNS A record at the VM's public IP first.
+#
+# The backend publishes 8787 on loopback only, so this is the ONLY way in from
+# the internet. That keeps the token gate in the backend as the single place that
+# decides who may spend the student's credit.
+
+cadence.example.com {
+	encode zstd gzip
+
+	# Everything, including /health: there is no reason to expose more surface
+	# than one proxy rule. The backend decides what needs a token.
+	reverse_proxy 127.0.0.1:8787
+
+	# The panel is an extension, not a website, so there is no static root here.
+	# If you also serve the built panel as a page (the Step 10 /demo road), add
+	# the matching origin to CADENCE_ALLOW_ORIGIN on the backend.
+}

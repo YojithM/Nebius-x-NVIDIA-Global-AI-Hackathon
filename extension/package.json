@@ -1,0 +1,19 @@
+{
+  "name": "cadence-extension",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "description": "Cadence — voice-first study assistant (Chrome MV3 side panel)",
+  "scripts": {
+    "build": "vite build",
+    "watch": "vite build --watch"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.2",
+    "vite": "^8.3.4"
+  }
+}

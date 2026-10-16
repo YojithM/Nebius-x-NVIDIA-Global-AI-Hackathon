@@ -1,0 +1,265 @@
+# Cadence — Chrome extension
+
+Manifest V3 side panel. Click the mic, talk, get a short spoken reply.
+
+> **Where the API key is: nowhere in here.** This extension holds no model
+> credentials and makes no calls to Nebius. It talks only to a backend over
+> HTTP, and that backend holds the key in its own environment. That is the whole
+> reason for the split — you can read `dist/` with devtools open and find
+> nothing worth stealing.
+
+## Build
+
+```bash
+cd extension
+npm install
+npm run build      # writes dist/
+```
+
+### Pointing it at a deployed backend
+
+The panel points at `127.0.0.1:8787` unless you tell it otherwise. To talk to a
+hosted backend (see [`deploy/README.md`](../deploy/README.md)) set two Vite
+variables at build time:
+
+```bash
+VITE_BACKEND_URL="https://<your-host>" \
+VITE_BACKEND_TOKEN="<the backend's CADENCE_TOKEN>" \
+  npm run build
+```
+
+- `VITE_BACKEND_URL` is the only change needed for the URL. The panel still holds
+  no **Nebius** key — that stays in the backend's environment.
+- `VITE_BACKEND_TOKEN` is a token for *our* backend, a different secret. It is
+  compiled into `dist/`, so **treat the built extension as a secret** and do not
+  publish it. A 401 tells you the build has no token or the wrong one.
+- `public/manifest.json` allows `https://*.nebius.cloud/*` in addition to
+  localhost. If you used your own domain, add it to `host_permissions` or Chrome
+  blocks the request before it leaves the panel.
+
+Leave both unset and everything behaves exactly as it did before Step 7.
+
+## Load it unpacked
+
+1. Start the backend first (it's the other half of the loop):
+   ```bash
+   python3 backend/server.py
+   ```
+   You should see:
+   ```
+   Cadence backend (router mode) listening on http://127.0.0.1:8787
+     skills loaded: explain, plan, quiz, remember, rephrase, study_breakdown
+   ```
+   `skills loaded` is the check that matters — if it says `none`, or lists a
+   `SKILL PROBLEM`, the panel will still run but every turn takes the `general`
+   path.
+
+2. Open `chrome://extensions`
+3. Turn on **Developer mode** (top right)
+4. **Load unpacked** → select the `extension/dist` folder
+   (Yes, `dist`, not `extension`. Chrome loads built output.)
+5. Click the Cadence toolbar icon — the side panel opens. Pin it if you like.
+
+## The tabs
+
+**Today** is the voice loop, with the **brief** at the top: what is due, how
+soon, the weak topics you named, and whether a quiz is open — composed by the
+backend in code from your own files, so it costs nothing and nothing in it was
+invented by a model. The meta line under each reply tells you what the turn
+actually did, including the tools it ran: `general · 4443ms · $0.000986 · super ·
+calculate · 3 steps`, or `web_search (failed)` when the search could not run.
+That line is the honest half of the feature — a plan that checked nothing says
+so, instead of sounding confident. A searched answer also carries its
+**sources**: the reply cites them as `[1]`, each marker is a link, and the list
+under it is built only from the pages the search tool actually returned — a URL
+the model typed stays text, and a citation with no page behind it is dropped
+rather than shown. **Log** is the backend's own action log, read back over
+`/log`: one line per event, counts and reasons only, never the student's words or
+a page's contents. **Progress** is what the quizzes taught us.
+**Memory** is everything the assistant has kept — grouped by topic, each note
+with a × to delete it, and a footer naming the actual directory on disk. Nothing
+is stored in the extension: each tab is a view over files on the backend.
+
+The Memory tab is deliberately boring. Memory you cannot inspect is
+indistinguishable from memory you should not trust, so the goal is that a student
+can see all of it, understand where it lives, and remove any of it without
+asking us — including by editing the file themselves.
+
+The Progress tab makes the same promise about a **more** sensitive file. A study
+record is a list of the things you got wrong, so it is one plain Markdown file
+per quiz under `progress/`, and the tab is a view over those files:
+
+- an **overall row** — quizzes taken, questions asked, how many were answered,
+  and a running percentage over the questions that were actually graded;
+- **weakest first** — each topic with its accuracy, and the number of questions
+  it is based on, so an 0%-of-2 topic is not confused with an 0%-of-20 one;
+- a **quiz list**, newest first, each expanding to the exact questions, your
+  words, and the verdict — with the file path shown, and a × to delete it, plus
+  a **Clear all** with one confirmation.
+
+Like the Memory tab, nothing here is invented for display: the score is the
+verdicts in the file, and the weakest-first order is accuracy over graded
+questions only. A quiz you started and walked away from shows its unanswered
+questions as unanswered rather than as failures, and the numbers say `no answers
+yet` instead of a 0% that would be a lie.
+
+## Test the voice loop
+
+1. Click the big mic button. Chrome will ask for microphone permission the first
+   time — **allow it**.
+2. Say something: *"what's due this week"*. The words appear as you speak
+   (greyed out and italic while provisional).
+3. When you stop, the turn goes to the backend and the reply appears and is
+   spoken aloud.
+4. The small line under each reply shows **which skill the router picked**, then
+   latency, cost, tier, and the page title that was sent:
+
+   ```
+   study_breakdown  4717ms · $0.000733 · super · page: Canvas — Organic Chemistry Midterm
+   ```
+
+   The chip is the useful part. Ask *"break lab report 3 into study blocks"* and
+   it reads `study_breakdown`; ask *"what is a ketone?"* and it reads `general`.
+   If it ever shows `general` in **red**, the model's routing output failed
+   validation and we fell back — the tooltip says so, and `backend/logs/` has
+   the detail.
+
+If the badge in the header says `backend: offline`, the backend isn't running —
+start it and reload the panel. When it's healthy it shows the backend's mode:
+`backend: router`.
+
+## The quiz loop
+
+Say *"quiz me on this page"* or *"quiz me on chapter 4"*, or press nothing and
+just say *"quiz me, five questions"* — the skill reads the page if you asked it
+to, or falls back to the topics you are weakest at. Question 1 is read aloud with
+its number and the total, and then you just answer.
+
+While a quiz is open, the panel is unchanged — there is no quiz UI to learn,
+because the point is that you talk. A few things to know:
+
+- **An answer is graded; a question is not.** *"the stroma"* is graded. *"explain
+  that again"* is routed to a skill, so it answers you and leaves the question
+  open. That precedence is decided by the backend, not the panel.
+- **Four things are free.** *"stop"*, *"repeat that"*, *"how am I doing"*, and *"I
+  don't know"* are answered in code with no model call. *"I don't know"* is scored
+  as incorrect (the strongest signal of a weak topic), the right answer is spoken,
+  and the next question follows.
+- **Everything is written down.** Watch the Progress tab or open
+  `progress/<date>-<topic>-<id>.md`; each answer and verdict appears as it happens.
+
+When the last question is answered, the score is spoken and the meta line under
+it shows the session status — the same line that shows the skill, latency, cost,
+and tier for any other turn.
+
+## Reading the page you're on
+
+Two ways to invoke it, and both are per-question:
+
+1. **Say it** — *"explain this page"*, *"rephrase this paragraph"*, *"walk me
+   through this section"*. The panel recognises the page-naming words itself
+   (`utteranceReadsPage()`), so it reads the tab before asking.
+2. **Press it** — **Read this page** arms the *next* question only. The button
+   flips to *Reading this page ✓* and a note appears above the transcript saying
+   the text will be sent **once**; after that question the arm is spent, whether
+   the turn succeeded or not. When both happen they mean the same thing, so the
+   button is a convenience, not a second policy.
+
+The meta line tells you exactly what happened:
+
+```
+explain  4265ms · $0.000538 · super · page: Photosynthesis - Wikipedia · read 246 chars
+```
+
+`page:` is the **title** (always sent, from `chrome.tabs`). `read 246 chars` only
+appears when the **body** was read — so the absence of that clause is the
+verifiable statement "this turn did not read your page". The number is what
+`chrome.scripting` extracted from the tab, before the backend's 12,000-character
+cap.
+
+When a read fails the turn still runs, with a sentence saying why:
+`unsupported` (not running as an extension), `blocked` (Chrome refused to inject
+into this tab — click the Cadence icon while on it), `no-tab`, or `empty`
+(an image or a PDF). None of those is an error state; they are all "answered
+without the page".
+
+What Chrome is actually asked for: `chrome.scripting.executeScript` into the
+active tab, which reads `innerText` of `article, main, [role="main"], #content`
+(falling back to `body`) — a reader's view, so `<script>`, `<style>` and hidden
+nodes never travel. Nothing else in the panel reads a page, and there is no
+background reader: closing the panel stops it entirely.
+
+## What's deliberately NOT here
+
+- **No model calls from the extension.** The extension holds no credentials and
+  never talks to Nebius. Model calls happen on the backend; the panel only POSTs
+  to it. (The reply you hear is a real Nemotron call now — just not one made
+  from in here.)
+- **No uninvited page contents.** The panel always sends the active tab's
+  **title** to the router, because "what's due this week" means something
+  different on Canvas than on a Wikipedia page. The **body** is read only for
+  the one question you asked it for — see the section above. There is no
+  standing "always read pages" setting, and no code path that reads a page the
+  student did not ask for.
+- **No microphone or audio state in the service worker.** `background.js` does
+  one thing: wire the toolbar button to the side panel. MV3 service workers are
+  killed after ~30s idle, so any conversation state kept there would vanish
+  mid-sentence.
+- **The confirmation loop exists, and no shipped skill needs it.** A skill that
+  declares `requires_confirmation`, or a general request the router flags, is
+  answered with *"Shall I…?"* and two buttons — **Yes, go ahead** and **No** — under
+  the meta line's *awaiting your go-ahead*. The buttons come off the turn the moment
+  one is pressed, because the backend spends an approval once; a "yes" runs the
+  action that was described, not a fresh reading of whatever gets said next, and
+  either answer expires after five minutes. Since none of the six shipped skills
+  declares `requires_confirmation`, you will mostly see this when the general path
+  flags a request that would change something.
+- **The second kind of question is a file.** When the general path drafts a skill,
+  the payload's `confirmation.kind` is `"skill"`, `path` is where it would be saved
+  and `draft` is the file's exact text — rendered in a monospace `<pre>` under the
+  reply, because a student approving a file has to be able to read it. The button
+  says **Yes, save it**, and what the backend writes is that string byte for byte:
+  this side composes nothing and edits nothing. A refusal spends no model call, and
+  a draft that fails the backend's own check never becomes a question at all — it
+  arrives as a reply that says nothing was saved.
+- **No quiz state in the extension.** What question you are on, and whether the
+  quiz is still open, live in `progress/*.md` on the backend. Closing the panel
+  mid-quiz loses nothing: reopen it, or ask *"how am I doing"*, and the loop picks
+  up where it was.
+- **No memory editing in the UI.** You can delete a note from the Memory tab, but
+  adding or rewriting one means asking the assistant or editing the file. The
+  file editing is the point, so this may stay that way.
+
+## Gotchas
+
+- **No hot reload.** MV3's CSP blocks the inline scripts Vite's dev server needs,
+  so `npm run dev` won't work. Run `npm run watch`, then hit the reload button
+  on the card in `chrome://extensions` after a rebuild.
+- **`npm run build` must succeed before Chrome will load changes.** Chrome reads
+  `dist/`, so an unbuilt edit is invisible.
+- **Speech recognition needs a network connection.** Chrome's Web Speech API
+  streams to Google's speech service; it is not an offline API. That is also why
+  the mic can't be tested in a headless browser — the automated tests stub the
+  speech boundary and verify everything on our side of it instead.
+- **The panel also runs as a plain web page.** Serving `dist/` over HTTP renders
+  the same UI, which is what `/demo` does (`CADENCE_DEMO=on python3
+  backend/server.py`, then open `/demo`). Two things change outside Chrome:
+  [`src/pageContext.js`](src/pageContext.js) reads the active tab's title via
+  `chrome.tabs`, so it returns no title and the turn proceeds without one — the
+  meta line just omits `page:`; and `src/speech.js` finds no Web Speech API, so the
+  mic does nothing and the **Read this page** button is disabled. The turn loop,
+  the brief, the tabs and the cost line are unchanged.
+- **The backend URL follows whoever served the page.** A build-time
+  `VITE_BACKEND_URL` still wins, but with none set a panel served over HTTP talks
+  to the origin that served it, and an extension (where `location.protocol` is
+  `chrome-extension:`) falls back to `127.0.0.1:8787`. This was a real bug: a demo
+  served on port 8791 reported `backend: offline` because the built panel was
+  asking 8787.
+- **`activeTab` + `scripting`, never `tabs` or `<all_urls>`.** The manifest asks
+  for `activeTab`, which Chrome grants when you click the toolbar icon — the same
+  click that opens the panel — plus `scripting` to run the one extractor function
+  above. Chrome itself refuses `executeScript` on any tab you did not invoke the
+  extension on (`chrome://` pages, the Web Store, PDFs), so the browser enforces
+  a large part of the promise for us. We never ask for permission to read your
+  history or to blanket-read every tab; a read that Chrome blocks comes back as
+  the `blocked` message above.

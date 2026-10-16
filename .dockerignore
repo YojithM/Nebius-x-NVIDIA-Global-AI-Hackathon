@@ -1,0 +1,29 @@
+# Build context hygiene for the backend image.
+#
+# The single most important line here is `.env`: the Nebius key must never be
+# baked into an image layer, because layers are readable by anyone who can pull
+# the image.
+
+.env
+.env.*
+
+# The student's own data is mounted at runtime, never shipped in the image.
+memory/
+progress/
+backend/logs/
+
+# Not needed to run the server.
+extension/
+spike/
+node_modules/
+dist/
+.git/
+.gitignore
+*.md
+!skills/**/*.md
+FEEDBACK.md
+Dockerfile
+.dockerignore
+
+__pycache__/
+*.py[cod]

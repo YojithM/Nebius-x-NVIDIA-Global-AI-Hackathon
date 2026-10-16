@@ -1,0 +1,218 @@
+# Cadence — continuous integration.
+#
+# Two things have to keep working on every push: the backend test suite (pure
+# stdlib, so there is deliberately no install step) and the extension build,
+# because `dist/` is what "Load unpacked" points at.
+#
+# The build job checks the *artifact*, not only the exit code. A Vite build can
+# succeed and still produce an extension MV3 refuses to run — that shows up as a
+# blank side panel, not a red build. The check that earns its keep is the inline
+# <script> one: Vite's default modulePreload polyfill injects exactly that, MV3's
+# CSP blocks it, and `vite.config.mjs` turns the polyfill off to avoid it.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# This workflow only reads the repo. Saying so means the default token handed to
+# a PR's build cannot write to it.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Backend tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of what the project claims: README documents Python 3.9+
+        # (developed on 3.9.6) and the Dockerfile ships 3.12-slim. A version
+        # this only ever passed on would make one of those claims false.
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # There is no `pip install` step on purpose: the backend and its tests are
+      # stdlib-only, which is what makes `python3 backend/server.py` the whole
+      # setup story. If that ever stops being true, this job fails, which is the
+      # signal we want.
+      - name: Run the suite
+        run: |
+          set -o pipefail
+
+          # Test the glob before looping over it. Without this, an unmatched
+          # pattern is passed through literally and `python3 backend/tests/
+          # test_*.py` fails with "file not found", which reads like a broken
+          # suite rather than a moved directory.
+          suite_files=(backend/tests/test_*.py)
+          if [ ! -e "${suite_files[0]}" ]; then
+            echo '::error::no suites matched backend/tests/test_*.py'
+            exit 1
+          fi
+
+          suites=0
+          failed=0
+          total=0
+
+          for suite in "${suite_files[@]}"; do
+            name=$(basename "$suite")
+            suites=$((suites + 1))
+            echo "::group::$name"
+
+            # Capture the output so a failure can be shown whole, but take the
+            # exit status from the test process itself: `if` on the command,
+            # never on a pipeline. A green filter is not a passing test.
+            if output=$(python3 "$suite" 2>&1); then
+              printf '%s\n' "$output" | tail -3
+            else
+              failed=$((failed + 1))
+              printf '%s\n' "$output"
+              printf '::error file=%s::%s failed\n' "$suite" "$name"
+            fi
+
+            # awk, not sed: BSD sed does not accept \? in a BRE, so the same
+            # expression silently reads 0 tests on a developer's Mac. Counted for
+            # a failed suite too, so the total is the whole suite and not just
+            # the part that passed.
+            ran=$(printf '%s\n' "$output" | awk '/^Ran [0-9]+ test/ { print $2; exit }')
+            total=$((total + ${ran:-0}))
+
+            echo "::endgroup::"
+          done
+
+          printf '### Python %s — %s tests across %s suites, %s suite(s) failed\n' \
+            "${{ matrix.python-version }}" "$total" "$suites" "$failed" >> "$GITHUB_STEP_SUMMARY"
+
+          # A job that passes because nothing ran is not a gate: if the count
+          # above ever stops matching unittest's output, the summary would
+          # report "0 tests" for a green run.
+          if [ "$total" -eq 0 ]; then
+            printf '::error::ran %s suites but read no test count from any of them\n' "$suites"
+            exit 1
+          fi
+
+          if [ "$failed" -ne 0 ]; then
+            printf '::error::%s of %s suites failed on Python %s\n' \
+              "$failed" "$suites" "${{ matrix.python-version }}"
+            exit 1
+          fi
+
+  extension:
+    name: Extension build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          # Matches the version this is developed against; Vite 8 itself wants
+          # ^20.19 or >=22.12.
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      # `npm ci`, not `npm install`: it installs the lockfile exactly and fails
+      # when the lockfile and package.json disagree, which is the drift worth
+      # catching here rather than on someone's laptop.
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        run: npm run build
+
+      # The build exit code says Vite finished, not that Chrome will load what it
+      # wrote. This walks the same paths Chrome does from dist/.
+      - name: Check the built extension
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, re, sys
+
+          # `python3` is part of the GitHub-hosted Ubuntu images; nothing here
+          # needs a package.
+          dist = pathlib.Path("dist")
+          problems = []
+
+          manifest_path = dist / "manifest.json"
+          if not manifest_path.is_file():
+              sys.exit("dist/manifest.json is missing - public/ was not copied into the build")
+
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          if manifest.get("manifest_version") != 3:
+              problems.append(
+                  f"manifest_version is {manifest.get('manifest_version')!r}, expected 3"
+              )
+
+          # Everything the manifest points at has to sit in the same directory,
+          # because dist/ is the extension root once it is loaded unpacked.
+          declared = (
+              ("background.service_worker",
+               (manifest.get("background") or {}).get("service_worker")),
+              ("side_panel.default_path",
+               (manifest.get("side_panel") or {}).get("default_path")),
+          )
+          for label, ref in declared:
+              if not ref:
+                  problems.append(f"manifest has no {label}")
+              elif not (dist / ref).exists():
+                  problems.append(f"manifest {label} -> {ref}, which is not in dist/")
+
+          icons = manifest.get("icons") or {}
+          if not icons:
+              problems.append("manifest has no icons")
+          for size, ref in icons.items():
+              if not (dist / ref).exists():
+                  problems.append(f"manifest icon {size} -> {ref}, which is not in dist/")
+
+          panel = (manifest.get("side_panel") or {}).get("default_path") or "sidepanel.html"
+          panel_path = dist / panel
+          if not panel_path.is_file():
+              problems.append(f"the side panel HTML ({panel}) is missing")
+          else:
+              html = panel_path.read_text(encoding="utf-8")
+
+              # MV3 blocks inline scripts, so one here is a blank panel, not a
+              # warning. This is the regression vite.config.mjs guards against.
+              for tag in re.findall(r"<script[^>]*>", html):
+                  if not re.search(r"\bsrc\s*=", tag):
+                      problems.append(
+                          f"inline script in the built HTML (MV3 CSP blocks it): {tag[:80]}"
+                      )
+
+              if not re.search(r"<script[^>]*\bsrc\s*=", html):
+                  problems.append("the built HTML has no <script src> - the panel would render nothing")
+
+              # Absolute paths in the HTML resolve against the extension root.
+              for ref in re.findall(r'(?:src|href)="/([^"]+)"', html):
+                  if not (dist / ref).exists():
+                      problems.append(f"{panel} references /{ref}, which is not in dist/")
+
+          if problems:
+              for problem in problems:
+                  print(f"::error::{problem}")
+              sys.exit(f"{len(problems)} problem(s) with the built extension")
+
+          print("dist/ is loadable: MV3 manifest, every referenced file present, no inline scripts")
+          PY
+
+      # So the build this job verified is the build you can actually load.
+      - name: Upload the built extension
+        uses: actions/upload-artifact@v7
+        with:
+          name: cadence-extension-dist
+          path: extension/dist
+          if-no-files-found: error
