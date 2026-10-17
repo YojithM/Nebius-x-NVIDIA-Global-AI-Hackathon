@@ -274,7 +274,8 @@ and tier for any other turn.
 
 ## Reading the page you're on
 
-Two ways to invoke it, and both are per-question:
+Three ways to invoke it. The first two are per-question, and the third is a file
+you hand over:
 
 1. **Say it** — *"analyze this page"*, *"summarize this article"*, *"explain this
    page"*, *"rephrase this paragraph"*, *"walk me through this section"*. The panel
@@ -286,6 +287,62 @@ Two ways to invoke it, and both are per-question:
    the text will be sent **once**; after that question the arm is spent, whether
    the turn succeeded or not. When both happen they mean the same thing, so the
    button is a convenience, not a second policy.
+3. **Pick a PDF** — **Read a PDF** opens the file picker and attaches the file's
+   text to the conversation until **Clear**. Deliberately *not* one-shot like the
+   other two: choosing a file by hand is deliberate, and re-choosing it before
+   every follow-up would be busywork. The note above the transcript names the file,
+   its page count and its character count, so an attached document is never
+   invisible.
+
+**A Google Doc or Sheet is read as a document, not as a page.** Docs stopped
+putting the document in the DOM years ago: the text is drawn into
+`kix-canvas-tile-content` canvases, and `innerText` on that page returns the
+ruler, the menu bar and the collaborator names. Measured on a live document, that
+was **1,152 characters of interface labels and not one word of the document** —
+which is why asking about a resume came back as *"this looks like interface
+labels, could you paste the passage?"*. The model was right; the extractor was
+wrong. So a `docs.google.com/document/d/<id>` tab is read through the file's own
+text export (`/export?format=txt`; CSV for a Sheet), fetched from the **panel**
+and not from inside the page, because a content script inherits the page's origin
+and is subject to CORS while an extension page with host permission is not.
+`credentials: 'include'` is what makes a private document work: the request
+carries your session, so the export comes back as you. A failure there is reported
+as a failure rather than papered over with the toolbar.
+
+**Text that is drawn rather than written is refused, not summarised.** Slides, PDF
+viewers and canvas apps have pixels and almost no words, so the read is rejected
+before any model sees it — measured as canvas coverage over half the viewport with
+under 1,500 characters of DOM text — with a sentence saying so. The earlier
+behaviour was to send the menu bar and let the model apologise for it.
+
+**A PDF you pick is readable; a PDF in a tab is not.** Those are different files
+as far as Chrome is concerned, and the difference is the whole reason the picker
+exists:
+
+- **In a tab**, a PDF is an `application/pdf` embed that Chrome's viewer draws
+  itself — measured on a real PDF, the page holds **0 characters of text** and no
+  canvas. Nothing in the DOM is the document, so the panel says "that's a PDF" and
+  asks you for the passage.
+- **From your disk**, press **Read a PDF** and choose the file. It is read in the
+  panel by pdf.js — bundled, running locally, needing no permission and no page
+  access — and the text is attached to the conversation until you press **Clear**.
+  Verified on real files on this machine: a 1-page transcript came out at 2,609
+  characters, a 6-page worksheet at 5,328, a Google Doc printed to PDF at 5,295.
+- **A scan is refused, not summarised.** A 42-page reading that was pages of
+  images yielded 83 characters of text — measured — so anything averaging under 25
+  characters a page is reported as a scan and answered with "paste the passage",
+  because inferring a document from a caption is inventing it.
+
+A `file://` page (a PDF or anything else opened from disk as a tab) is still
+refused before anything is attempted: Chrome blocks extensions from local files
+unless you switch on *Allow access to file URLs* by hand, and switching it on would
+not help a PDF. The panel deliberately does **not** offer the Allow button there,
+because that button could not fix it.
+
+pdf.js is ~430 kB and is loaded only when you pick a file (`pdfLoader.js` is a
+dynamic import), so a panel that never reads a PDF pays nothing for the parser.
+Its worker is bundled as an asset — no code is fetched from a network at run time,
+which an extension page's CSP would forbid anyway.
 
 The meta line tells you exactly what happened:
 
@@ -295,14 +352,16 @@ explain  4265ms · $0.000538 · super · page: Photosynthesis - Wikipedia · rea
 
 `page:` is the **title** (always sent, from `chrome.tabs`). `read 246 chars` only
 appears when the **body** was read — so the absence of that clause is the
-verifiable statement "this turn did not read your page". The number is what
-`chrome.scripting` extracted from the tab, before the backend's 12,000-character
-cap.
+verifiable statement "this turn did not read your page". The number is what came
+out of the tab — `chrome.scripting`'s extraction, or a Google file's own text
+export — before the backend's 12,000-character cap.
 
 When a read fails the turn still runs, with a sentence saying why:
 `unsupported` (not running as an extension), `blocked` (Chrome refused to inject
-into this tab), `no-tab`, or `empty` (an image or a PDF). None of those is an
-error state; they are all "answered without the page".
+into this tab), `no-tab`, `empty` (an image or a PDF), `export` (a Google file
+that would not export — signed out, or an account without access), or `canvas`
+(text drawn rather than written). None of those is an error state; they are all
+"answered without the page".
 
 **A blocked read is now recoverable, and this is the fix for the bug that made
 page reading look broken.** Host access is an *optional* permission

@@ -128,6 +128,53 @@ export function pageReadingSupported() {
 }
 
 /**
+ * The plain-text export of a Google Doc or Sheet, or null for any other URL.
+ *
+ * This exists because Google Docs stopped putting the document in the DOM: the
+ * text is drawn into `kix-canvas-tile-content` canvases, and `innerText` on the
+ * page returns the ruler, the menu bar and the collaborator names. Measured on a
+ * live document, that was 1,152 characters of interface labels and not one word
+ * of the document - which is why "analyze this page" on a resume answered "this
+ * looks like interface labels, please paste the passage". The model was right and
+ * the extractor was wrong.
+ *
+ * The export endpoint returns the real text, and it is fetched from the *panel*
+ * rather than from inside the page: a content script inherits the page's origin
+ * and is subject to CORS, while an extension page with host permission is not.
+ * Measured: the same URL fetched from the page is blocked, and the docs say an
+ * extension page succeeds with the grant this feature already asks for.
+ */
+export function documentExportUrl(url) {
+  const match = /^https:\/\/docs\.google\.com\/(document|spreadsheets)(?:\/u\/\d+)?\/d\/([A-Za-z0-9_-]{10,})/.exec(
+    String(url || ''),
+  )
+  if (!match) return null
+  const [, kind, id] = match
+  // A slide deck exports as a zip rather than text, so Slides is deliberately
+  // absent here: better an honest "paste the passage" than a download we cannot
+  // read. Sheets exports as CSV, which is text like any other.
+  return kind === 'document'
+    ? `https://docs.google.com/document/d/${id}/export?format=txt`
+    : `https://docs.google.com/spreadsheets/d/${id}/export?format=csv`
+}
+
+/**
+ * Is this text drawn rather than written? -> boolean.
+ *
+ * `coverage` is the share of the viewport covered by canvases, `length` the
+ * characters the DOM actually holds. A page can have a chart canvas and real text
+ * (an article with a graph), so the rule needs both: a canvas-drawn document has
+ * almost no DOM text to go with the pixels. This is the check that stops UI
+ * labels from being sent to the model as if they were the page.
+ */
+export function isCanvasOnly(coverage, length, threshold = 0.5, minChars = 1500) {
+  return Number(coverage) >= threshold && Number(length) < minChars
+}
+
+/** How long we wait for an export before giving up and saying so. */
+export const EXPORT_TIMEOUT_MS = 8000
+
+/**
  * Runs INSIDE the page, so it must be self-contained: Chrome serialises this
  * function's source, and nothing from this module travels with it.
  */
@@ -135,7 +182,7 @@ function extractPageText(limit) {
   const root =
     document.querySelector('article, main, [role="main"], #content, .content') ||
     document.body
-  if (!root) return { text: '', length: 0, source: 'none' }
+  if (!root) return { text: '', length: 0, source: 'none', canvasCoverage: 0 }
   // innerText, not textContent: it is what a reader would see, so it skips
   // <script>, <style> and visually hidden nodes without us having to list them.
   const raw = (root.innerText || '')
@@ -143,10 +190,71 @@ function extractPageText(limit) {
     .replace(/ {2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+  // How much of the screen is canvas. Read here, in the page, because it is the
+  // only place that knows - and reported even when the text looks fine, so the
+  // caller can decide whether to trust it.
+  let canvasArea = 0
+  for (const canvas of Array.from(document.querySelectorAll('canvas'))) {
+    const box = canvas.getBoundingClientRect()
+    canvasArea += Math.max(0, box.width) * Math.max(0, box.height)
+  }
+  const viewport = Math.max(1, window.innerWidth * window.innerHeight)
   return {
     text: raw.slice(0, limit),
     length: raw.length,
     source: root === document.body ? 'body' : 'main',
+    canvasCoverage: Math.min(1, canvasArea / viewport),
+    // A PDF is handed to Chrome's own viewer as an `application/pdf` embed, which
+    // draws the pages itself and puts no text in the DOM - measured: 0 characters
+    // of innerText on a real PDF. Reported so the panel can say "that is a PDF"
+    // instead of the vaguer "no readable text".
+    pdf: Boolean(document.querySelector('embed[type="application/pdf"]')),
+  }
+}
+
+/**
+ * Fetch a document's own text export. -> the same shape as a page read, or null.
+ *
+ * `credentials: 'include'` is what makes a private document work: the extension
+ * holds host permission for the site, so the request carries the student's
+ * session and the export comes back as the person who owns the file. A public
+ * document works signed out. Anything else - a signed-out private document, an
+ * account without access - fails and is reported as a failure rather than papered
+ * over with the canvas text.
+ */
+async function readDocumentExport(exportUrl, title, url) {
+  try {
+    const response = await fetch(exportUrl, {
+      credentials: 'include',
+      // Guarded rather than assumed: `AbortSignal?.timeout` on a browser without
+      // the static would be a ReferenceError, and a fetch that never returns must
+      // not be able to hang a turn.
+      signal:
+        typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+          ? AbortSignal.timeout(EXPORT_TIMEOUT_MS)
+          : undefined,
+    })
+    if (!response.ok) return null
+    // The export arrives as a download: a byte-order mark, CRLF line endings, and
+    // a trailing blank run. Measured on a real document, so this is what it does
+    // rather than what it should. Line endings matter beyond tidiness - the
+    // backend flattens each message to one line, and a stray \r shows up in the
+    // prompt as a character the model has to guess at.
+    const text = (await response.text())
+      .replace(/^\uFEFF/, '')
+      .replace(/\r\n?/g, '\n')
+      .trim()
+    if (!text) return null
+    return {
+      text: text.slice(0, PAGE_TEXT_MAX_CHARS),
+      title,
+      url,
+      length: text.length,
+      truncated: text.length > PAGE_TEXT_MAX_CHARS,
+      source: 'export',
+    }
+  } catch {
+    return null
   }
 }
 
@@ -171,6 +279,31 @@ export async function readPageText() {
   }
   if (!tab || typeof tab.id !== 'number') return { error: 'no-tab' }
 
+  // A file on the student's own disk. Two walls, and neither is one a button can
+  // remove: Chrome refuses to inject into `file://` pages unless the extension is
+  // granted "Allow access to file URLs" by hand, and a PDF opened from disk is
+  // drawn by the PDF viewer - an `application/pdf` embed with no text in the DOM
+  // at all (measured: 0 characters of innerText on a PDF, canvas count 0). Failing
+  // here rather than after an injection attempt keeps the panel from offering an
+  // Allow button that could not possibly fix it.
+  if (/^file:/i.test(String(tab.url || ''))) return { error: 'file' }
+
+  // A Google Doc or Sheet gets read as a document, not as a page. Checked before
+  // injection because the DOM route is guaranteed to fail there, and because the
+  // grant this needs is the same one the panel already asks for.
+  const exportUrl = documentExportUrl(tab.url)
+  if (exportUrl) {
+    if (!(await pageAccessGranted())) return { error: 'blocked', needsPermission: true }
+    const exported = await readDocumentExport(
+      exportUrl,
+      String(tab.title || '').slice(0, 300),
+      String(tab.url || '').slice(0, 500),
+    )
+    // No fallback to the DOM here on purpose: the DOM holds the toolbar, and
+    // sending a model the menu bar is worse than telling the student we failed.
+    return exported || { error: 'export' }
+  }
+
   let payload
   try {
     const results = await chrome.scripting.executeScript({
@@ -193,6 +326,14 @@ export async function readPageText() {
     }
   }
 
+  // Canvas-drawn text: the page has pixels and almost no words, so what innerText
+  // returns is interface, not content. Refused rather than sent - a model handed
+  // the menu bar can only apologise for it, which is exactly what a student saw.
+  if (payload && isCanvasOnly(payload.canvasCoverage, payload.length)) {
+    return { error: 'canvas', coverage: payload.canvasCoverage || 0 }
+  }
+
+  if (payload && !payload.text && payload.pdf) return { error: 'pdf' }
   if (!payload || !payload.text) return { error: 'empty' }
   return {
     text: payload.text,
@@ -200,5 +341,6 @@ export async function readPageText() {
     url: String(tab.url || '').slice(0, 500),
     length: payload.length,
     truncated: payload.length > payload.text.length,
+    source: payload.source,
   }
 }

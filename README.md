@@ -175,6 +175,23 @@ nothing more. The header of that policy is in [`extension/src/pageContext.js`](e
 and the rule itself is enforced server-side in [`backend/server.py`](backend/server.py) — text
 that arrives without an invocation is refused with a 400 rather than quietly used.
 
+A **PDF from your disk** is read by pressing **Read a PDF**: the file is parsed in
+the panel by a bundled pdf.js, needs no permission and no page access, and stays
+attached to the conversation until you clear it. Measured on real files here — a
+transcript, a worksheet, a printed Google Doc — 4 of 5 came out as text, and the
+fifth (a 42-page scan yielding 83 characters) was refused as a scan rather than
+summarised from a caption. A PDF *in a tab* is still unreadable: Chrome's viewer
+puts 0 characters in the DOM.
+
+Two pages are read differently from the rest, because the DOM cannot describe them.
+A **Google Doc or Sheet** draws its text into canvases, so `innerText` there is the
+menu bar and the ruler — measured on a live document, 1,152 characters of interface
+labels and no words of the document. Those tabs are read through the file's own
+text export instead, fetched by the panel (a content script would be CORS-blocked)
+with your session, so a private document works. And a page whose text is **drawn**
+rather than written — Slides, PDF viewers, canvas apps — is refused with a sentence
+saying so, instead of being sent to the model as if the menu bar were the reading.
+
 The page is *data*, never instructions: it is fenced in `<<< page text (untrusted) >>>`
 markers with the model told to ignore anything in it that looks like a command
 (and to mention it to you instead), and it only ever reaches a skill that declared

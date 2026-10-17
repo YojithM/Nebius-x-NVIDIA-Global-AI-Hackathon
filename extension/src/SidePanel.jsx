@@ -20,6 +20,7 @@ import LogTab from './LogTab.jsx'
 import MemoryTab from './MemoryTab.jsx'
 import ProgressTab from './ProgressTab.jsx'
 import CalendarOffer from './CalendarOffer.jsx'
+import { extractPdfText } from './pdfText.js'
 import {
   getPageContext,
   pageAccessGranted,
@@ -61,6 +62,26 @@ const PAGE_READ_ERRORS = {
   blocked:
     'Chrome wouldn’t let me read this tab. If it’s a chrome:// page or the web store, it can’t be read at all — otherwise grant access below.',
   empty: 'That page had no readable text — it may be an image or a PDF.',
+  // A Google Doc or Sheet that would not export: signed out, or an account
+  // without access to the file. The canvas in the page holds only the toolbar,
+  // so there is nothing else to try.
+  export:
+    'I couldn’t read that Google file. Its text export needs you to be signed in to an account that can open it — you can also use File → Download → Plain text, then paste it.',
+  // A file on the student's own disk. Chrome blocks extensions from local files
+  // unless file access is switched on for the extension by hand, and a PDF drawn
+  // from disk carries no text in the page for us to find either way - so this is a
+  // refusal with the one thing that does work.
+  file:
+    'That’s a file on your computer, and Chrome doesn’t let an extension read local files unless you turn on “Allow access to file URLs” for it — and a PDF’s text isn’t in the page for me to find even then. Copy the passage in, or paste it here, and I’ll work from that.',
+  // A PDF. Chrome's viewer draws the pages itself, so the words are not in the
+  // page at all - measured, 0 characters of innerText on a real PDF.
+  pdf:
+    'That’s a PDF, and Chrome draws it with its own viewer, so the words aren’t in the page for me to read. Copy or paste the passage you care about and I’ll work from that.',
+  // Text drawn rather than written: Slides, PDF viewers, canvas apps. Sent to the
+  // model once, and it answered "this looks like interface labels" - which was
+  // true, and our fault for sending the menu bar as if it were the page.
+  canvas:
+    'This page draws its text on a canvas rather than as words, so there is nothing in it for me to read. Google Slides, PDF viewers and canvas apps do this — paste the passage, or download it as text.',
 }
 
 // Shown when the read failed for want of permission, which is the one page
@@ -71,6 +92,22 @@ const PAGE_ACCESS_TEXT = {
   gesture:
     'Chrome only grants page access from a click, so use Read this page (or the button here) rather than asking by voice.',
   unsupported: 'This panel isn’t running as a Chrome extension, so it can’t read pages at all.',
+}
+
+// What went wrong with a picked PDF. Every one of these ends with the student
+// knowing whether to pick another file or paste the text, because "failed" on its
+// own is not something anyone can act on.
+const PDF_ERRORS = {
+  'not-pdf': 'That file isn’t a PDF.',
+  'too-big': 'That PDF is too big for me to read here — the ceiling is 60 MB.',
+  empty: 'That file is empty.',
+  missing: 'No file was chosen.',
+  password: 'That PDF is password-protected, so I can’t open it.',
+  'no-text':
+    'That PDF has no text in it at all — it’s pages of images, which I can’t read. Paste the part you need.',
+  scan:
+    'That PDF looks like a scan: pages of images with a caption or two of text. I can’t read pictures, so paste the passage you care about.',
+  failed: 'I couldn’t open that PDF. If it opens in a viewer, the text is there — try downloading it again, or paste the passage.',
 }
 
 /**
@@ -166,6 +203,11 @@ export default function SidePanel() {
   // the panel can offer the grant *and run that same question again*: the
   // student already asked, and making them ask twice was the old behaviour.
   const [pageBlocked, setPageBlocked] = useState(null)
+  // A PDF the student picked by hand. Held for the session rather than spent on
+  // one question: picking a file is deliberate, and re-picking it for every
+  // follow-up would be busywork. Clear removes it.
+  const [pdfDoc, setPdfDoc] = useState(null)
+  const [pdfBusy, setPdfBusy] = useState(false)
   const [notice, setNotice] = useState('')
   // The open quiz, reported by the backend on every turn. The panel does not
   // decide whether a quiz is running - it shows what the backend says, so the
@@ -223,6 +265,10 @@ export default function SidePanel() {
   // registered once per recording. Going through a ref keeps those callbacks
   // from closing over a stale version of runTurn.
   const runTurnRef = useRef(() => {})
+  // The picked PDF, for the same reason: a mic callback must see the file that is
+  // attached now, not the one that was attached when the callback was registered.
+  const pdfDocRef = useRef(null)
+  const pdfInputRef = useRef(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -422,8 +468,14 @@ export default function SidePanel() {
       // The page BODY only when the student asked for it — with the button, or in
       // the sentence itself. This is the whole policy, and it is two lines.
       const asked = armed || forcePage || utteranceReadsPage(text)
+      // A picked PDF outranks the tab: the student handed us that file for this
+      // conversation, and it is the thing their question is about.
+      const pdf = pdfDocRef.current
       let page = null
-      if (asked) {
+      if (pdf) {
+        page = { text: pdf.text, url: '', title: pdf.name, length: pdf.chars }
+        setPageBlocked(null)
+      } else if (asked) {
         const read = await readPageText()
         if (read.error) {
           setNotice(PAGE_READ_ERRORS[read.error] || PAGE_READ_ERRORS.empty)
@@ -445,10 +497,12 @@ export default function SidePanel() {
 
       const data = await sendTurn({
         transcript: text,
-        pageTitle: context.title,
+        pageTitle: pdf ? pdf.name : context.title,
         pageText: page?.text,
         pageUrl: page?.url,
-        pageInvoked: asked,
+        // `page_invoked` is what the backend requires of any turn carrying page
+        // text: the student's own question, or the file they chose by hand.
+        pageInvoked: asked || Boolean(pdf),
         previousReply: lastReplyRef.current,
         // The conversation so far, from the panel's own record of it. This is
         // what makes "yes" after an offer a continuation rather than a fresh,
@@ -538,6 +592,60 @@ export default function SidePanel() {
   useEffect(() => {
     runTurnRef.current = runTurn
   }, [runTurn])
+
+  useEffect(() => {
+    pdfDocRef.current = pdfDoc
+  }, [pdfDoc])
+
+  /**
+   * Read a PDF the student picks, here in the panel.
+   *
+   * Nothing about this touches a page, a permission or a server: the bytes come
+   * from the file they chose, the text is extracted in the panel, and it rides on
+   * a turn only when they ask a question. That is why it works for a file on their
+   * disk at all - Chrome's own viewer will not give us a PDF's words, and an
+   * extension cannot fetch `file://` (see `pdfText.js`).
+   */
+  const onPdfPicked = useCallback(async (event) => {
+    const file = event?.target?.files?.[0]
+    // Cleared so that picking the same file twice in a row still fires a change.
+    if (event?.target) event.target.value = ''
+    if (!file) return
+    setPdfBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      // Loaded on demand, for the same reason the panel keeps its other work out
+      // of this path: pdf.js is ~700 kB, and a student who never picks a file
+      // should not pay for the parser on every open of the panel.
+      const { loadPdfDocument } = await import('./pdfLoader.js')
+      const result = await extractPdfText(file, loadPdfDocument)
+      if (result.error) {
+        setNotice(PDF_ERRORS[result.error] || PDF_ERRORS.failed)
+        return
+      }
+      setPdfDoc({
+        name: file.name,
+        text: result.text,
+        chars: result.chars,
+        pages: result.pages,
+      })
+      // Armed too, so a follow-up phrased like a page question reads the tab as
+      // well; the file is what this turn is about either way.
+      setPageArmed(true)
+      setPageBlocked(null)
+      setNotice(
+        `Read ${result.chars.toLocaleString()} characters from ${file.name} ` +
+          `(${result.pages} page${result.pages === 1 ? '' : 's'})` +
+          (result.truncated ? ', trimmed to the first 12,000' : '') +
+          ' — ask me about it. Clear removes it.',
+      )
+    } catch {
+      setNotice(PDF_ERRORS.failed)
+    } finally {
+      setPdfBusy(false)
+    }
+  }, [])
 
   useEffect(() => {
     const last = [...turns].reverse().find((t) => t.role === 'cadence')
@@ -1082,6 +1190,32 @@ export default function SidePanel() {
           >
             {pageArmed ? 'Reading this page ✓' : 'Read this page'}
           </button>
+          {/*
+            The PDF picker. It needs no permission and no page: the student's own
+            file is read here in the panel, because Chrome's viewer will not hand
+            us a PDF's words and an extension cannot open `file://` at all.
+          */}
+          <button
+            type="button"
+            className={pdfDoc ? 'arm arm-on' : 'arm'}
+            aria-pressed={Boolean(pdfDoc)}
+            disabled={pdfBusy}
+            title={
+              pdfDoc
+                ? `Attached: ${pdfDoc.name} (${pdfDoc.chars.toLocaleString()} characters). Pick another file, or press Clear to remove it.`
+                : 'Pick a PDF from your computer and ask me about it. It is read here in the panel — no page access needed.'
+            }
+            onClick={() => pdfInputRef.current?.click()}
+          >
+            {pdfBusy ? 'Reading the file…' : pdfDoc ? 'PDF attached ✓' : 'Read a PDF'}
+          </button>
+          <input
+            ref={pdfInputRef}
+            type="file"
+            accept="application/pdf,.pdf"
+            onChange={onPdfPicked}
+            hidden
+          />
           {canTalk && (
             <button
               type="button"
@@ -1125,8 +1259,10 @@ export default function SidePanel() {
               conversationRef.current = []
               summaryRef.current = ''
               summarizedRef.current = 0
-              // A pending page question belongs to the cleared conversation.
+              // A pending page question and an attached file belong to the
+              // cleared conversation.
               setPageBlocked(null)
+              setPdfDoc(null)
               // Clearing the transcript does not end a quiz: the backend is the
               // one holding it, and the line above comes back on the next turn.
               setStatus('idle')
