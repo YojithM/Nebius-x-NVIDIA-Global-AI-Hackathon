@@ -8,7 +8,7 @@ tier: super
 requires_confirmation: false
 context: [page]
 when_to_use: "the student asks for something to be explained, unpacked, walked through, or made clearer — 'explain entropy', 'I don't get how the Krebs cycle works', 'walk me through this page', 'why does this happen'"
-not_for: "a bare factual question that wants one short answer ('what is a ketone', 'when is the midterm'), a request to plan or schedule work, a request to quiz them or to remember something, or a request to restate text they already understand (that is rephrase)"
+not_for: "a bare factual question that wants one short answer ('what is a ketone', 'when is the midterm'), a request to plan or schedule work, a request to quiz them or to remember something, a request to restate text they already understand (that is rephrase), or a request for what a page says rather than what one idea in it means ('analyze this page', 'summarise this', 'give me the gist') — that is page_summary, which covers the whole page instead of going deep on one part"
 tools: []
 metadata:
   hermes:

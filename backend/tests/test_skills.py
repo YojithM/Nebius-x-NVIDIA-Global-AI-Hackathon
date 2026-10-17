@@ -545,7 +545,9 @@ class TestShippedSkills(unittest.TestCase):
         with_page = sorted(
             s.name for s in registry.skills.values() if "page" in s.context
         )
-        self.assertEqual(with_page, ["explain", "plan", "quiz", "rephrase"])
+        self.assertEqual(
+            with_page, ["explain", "page_summary", "plan", "quiz", "rephrase"]
+        )
         # study_breakdown is pure planning and remembers nothing, so it asks for
         # nothing - the smallest context that does the job.
         self.assertEqual(registry.get("study_breakdown").context, ())

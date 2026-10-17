@@ -81,7 +81,7 @@ Every tier lives in exactly one file, [`config/models.json`](config/models.json)
 
 ## Try it in 60 seconds
 
-> **Honest status:** Steps 0–6 and 8–13 are done. **Step 12** added a read-only **Google Calendar**, asked about in words: Cadence can see what is coming up and can never change an event, because `calendar.readonly` is the only permission it asks for — the [setup is below](#let-cadence-see-your-calendar). Step 11 finished with grounded citations, the agent writing its own skill, and the per-request cost warning, all described below. The voice loop, the router, persistent memory, page reading, the quiz loop, the daily brief and the general agent loop all work — ask *"break lab report 3 into study blocks"* and Nemotron Nano picks the `study_breakdown` skill, which then runs on Super; say *"remember my midterm is on November 12"* and it is written to a Markdown file you own, visible in the Memory tab; say *"quiz me on this page"* and it asks you questions, grades your spoken answers, and records the result in the **Progress** tab. Asking *"what's due this week"* is answered from your own files without spending anything, the **Log** tab shows what the backend just did, and every reply carries what it cost. A searched answer now names the pages it came from: the reply cites them by number, the links under it open the real pages, and a citation with no page behind it is dropped rather than shown. **Step 13** gave the panel a better voice: an optional ElevenLabs key, held by the backend, reads replies aloud in something that does not sound like a GPS — and with no key, or with the account out of credits, Chrome's own voice takes over instead of going silent (see [A better voice](#a-better-voice-optional)). There is still **no hosted demo URL** — Step 7's deploy is blocked on the Nebius account, not on code — but there is a `/demo` mode you can run yourself, with a bundled sample course load and no extension install. And if the machine you are on has no microphone, the panel does not leave you with a dead button: press **Type instead**, or just watch the text box open by itself when the browser has no speech recognition. There are exactly **six** hand-written skills plus the router — and the agent can now draft a *new* one for you to read and approve (say *"write yourself a skill for turning a lab report into study blocks"*): the file is shown in full before it exists, nothing is written until you say yes, and the next request can use it without a restart. Everything below is real, and the fast parts take about two minutes.
+> **Honest status:** Steps 0–6 and 8–13 are done. **Step 12** added a read-only **Google Calendar**, asked about in words: Cadence can see what is coming up and can never change an event, because `calendar.readonly` is the only permission it asks for — the [setup is below](#let-cadence-see-your-calendar). Step 11 finished with grounded citations, the agent writing its own skill, and the per-request cost warning, all described below. The voice loop, the router, persistent memory, page reading, the quiz loop, the daily brief and the general agent loop all work — ask *"break lab report 3 into study blocks"* and Nemotron Nano picks the `study_breakdown` skill, which then runs on Super; say *"remember my midterm is on November 12"* and it is written to a Markdown file you own, visible in the Memory tab; say *"quiz me on this page"* and it asks you questions, grades your spoken answers, and records the result in the **Progress** tab. Asking *"what's due this week"* is answered from your own files without spending anything, the **Log** tab shows what the backend just did, and every reply carries what it cost. A searched answer now names the pages it came from: the reply cites them by number, the links under it open the real pages, and a citation with no page behind it is dropped rather than shown. **Step 13** gave the panel a better voice: an optional ElevenLabs key, held by the backend, reads replies aloud in something that does not sound like a GPS — and with no key, or with the account out of credits, Chrome's own voice takes over instead of going silent (see [A better voice](#a-better-voice-optional)). There is still **no hosted demo URL** — Step 7's deploy is blocked on the Nebius account, not on code — but there is a `/demo` mode you can run yourself, with a bundled sample course load and no extension install. And if the machine you are on has no microphone, the panel does not leave you with a dead button: press **Type instead**, or just watch the text box open by itself when the browser has no speech recognition. There are exactly **seven** hand-written skills plus the router — and the agent can now draft a *new* one for you to read and approve (say *"write yourself a skill for turning a lab report into study blocks"*): the file is shown in full before it exists, nothing is written until you say yes, and the next request can use it without a restart. Everything below is real, and the fast parts take about two minutes.
 
 **1. Clone and set up the key**
 
@@ -159,10 +159,17 @@ now requires the utterance itself to contain an explicit ask before any write
 happens, and blocks it otherwise. A model's judgement about what to keep is a
 suggestion; a privacy promise has to be a rule.
 
-**It reads the page you're on — only when you say so.** Say *"explain this page"*
-or *"rephrase this paragraph"*, or press **Read this page** in the panel (a
-one-shot arm, spent on the next question). Then the visible text of the tab goes
-to the backend alongside your words. Say anything else and the page body never
+**It reads the page you're on — only when you say so.** Say *"analyze this page"*,
+*"summarize this article"*, *"explain this page"*, *"rephrase this paragraph"*,
+or press **Read this page** in the panel (a one-shot arm, spent on the next
+question). Then the visible text of the tab goes to the backend alongside your words.
+
+Reading the page needs host access, and it is an **optional** permission asked for
+on a click — **Read this page**, or the **Allow page access and retry** button that
+appears when a read was refused. That button resends the same question once the
+grant lands, which matters because the previous design depended on the `activeTab`
+grant made by the toolbar click: it expires on a tab switch, so every page question
+in the action log had arrived with no title and no text and was answered blind. Say anything else and the page body never
 leaves the browser: *"what is a ketone?"* on the same tab sends the title and
 nothing more. The header of that policy is in [`extension/src/pageContext.js`](extension/src/pageContext.js)
 and the rule itself is enforced server-side in [`backend/server.py`](backend/server.py) — text
@@ -715,7 +722,8 @@ backend/             the agent backend (Steps 2+). Pure stdlib, no pip install n
                      test_smoke.py starts the real server against a stub model
 
 skills/              skills as SKILL.md files, not code
-  explain/           explains a concept, or the page you asked it to read
+  explain/           explains a concept, or one part of the page you asked it to read
+  page_summary/      summarises the page you are on: what it says, and what matters
   rephrase/          restates a passage: yours, the page's, or its own last reply
   plan/              fits work into the time you have before a deadline (Ultra)
   study_breakdown/   the reference skill: proves router -> args -> prompt end to end

@@ -48,7 +48,7 @@ Leave both unset and everything behaves exactly as it did before Step 7.
    You should see:
    ```
    Cadence backend (router mode) listening on http://127.0.0.1:8787
-     skills loaded: explain, plan, quiz, remember, rephrase, study_breakdown
+     skills loaded: explain, page_summary, plan, quiz, remember, rephrase, study_breakdown
    ```
    `skills loaded` is the check that matters — if it says `none`, or lists a
    `SKILL PROBLEM`, the panel will still run but every turn takes the `general`
@@ -276,9 +276,11 @@ and tier for any other turn.
 
 Two ways to invoke it, and both are per-question:
 
-1. **Say it** — *"explain this page"*, *"rephrase this paragraph"*, *"walk me
-   through this section"*. The panel recognises the page-naming words itself
-   (`utteranceReadsPage()`), so it reads the tab before asking.
+1. **Say it** — *"analyze this page"*, *"summarize this article"*, *"explain this
+   page"*, *"rephrase this paragraph"*, *"walk me through this section"*. The panel
+   recognises the page-naming words itself (`utteranceReadsPage()`), so it reads
+   the tab before asking. A summary request lands on `page_summary`; one that asks
+   what an idea means lands on `explain`.
 2. **Press it** — **Read this page** arms the *next* question only. The button
    flips to *Reading this page ✓* and a note appears above the transcript saying
    the text will be sent **once**; after that question the arm is spent, whether
@@ -299,9 +301,20 @@ cap.
 
 When a read fails the turn still runs, with a sentence saying why:
 `unsupported` (not running as an extension), `blocked` (Chrome refused to inject
-into this tab — click the Cadence icon while on it), `no-tab`, or `empty`
-(an image or a PDF). None of those is an error state; they are all "answered
-without the page".
+into this tab), `no-tab`, or `empty` (an image or a PDF). None of those is an
+error state; they are all "answered without the page".
+
+**A blocked read is now recoverable, and this is the fix for the bug that made
+page reading look broken.** Host access is an *optional* permission
+(`optional_host_permissions` for `http://*/*` and `https://*/*`), requested on a
+click: **Read this page** asks for it when the arm is set, and a reply whose read
+was refused shows **Allow page access and retry**, which grants it and then sends
+*the same question* again — no second speech, no second copy in the transcript.
+Before this, the panel relied on the `activeTab` grant from the toolbar click,
+which does not survive a tab switch or a reopened panel: every real turn in the
+action log arrived with no title and no page text, so a page question was always
+answered blind. The grant covers the sites you ask about and changes nothing
+about *when* a read happens: still only on your words or your button.
 
 What Chrome is actually asked for: `chrome.scripting.executeScript` into the
 active tab, which reads `innerText` of `article, main, [role="main"], #content`
@@ -352,7 +365,7 @@ background reader: closing the panel stops it entirely.
   the meta line's *awaiting your go-ahead*. The buttons come off the turn the moment
   one is pressed, because the backend spends an approval once; a "yes" runs the
   action that was described, not a fresh reading of whatever gets said next, and
-  either answer expires after five minutes. Since none of the six shipped skills
+  either answer expires after five minutes. Since none of the seven shipped skills
   declares `requires_confirmation`, you will mostly see this when the general path
   flags a request that would change something.
 - **The second kind of question is a file.** When the general path drafts a skill,
@@ -415,11 +428,14 @@ background reader: closing the panel stops it entirely.
   `chrome-extension:`) falls back to `127.0.0.1:8787`. This was a real bug: a demo
   served on port 8791 reported `backend: offline` because the built panel was
   asking 8787.
-- **`activeTab` + `scripting`, never `tabs` or `<all_urls>`.** The manifest asks
-  for `activeTab`, which Chrome grants when you click the toolbar icon — the same
-  click that opens the panel — plus `scripting` to run the one extractor function
-  above. Chrome itself refuses `executeScript` on any tab you did not invoke the
-  extension on (`chrome://` pages, the Web Store, PDFs), so the browser enforces
-  a large part of the promise for us. We never ask for permission to read your
-  history or to blanket-read every tab; a read that Chrome blocks comes back as
-  the `blocked` message above.
+- **`activeTab` + `scripting`, plus host access asked for on a click.** The
+  manifest declares `activeTab`, which Chrome grants when you click the toolbar
+  icon, and `scripting` to run the one extractor function above. Neither survives
+  a tab switch, which is why `http://*/*` and `https://*/*` are listed under
+  `optional_host_permissions` and requested only when you press **Read this page**
+  or **Allow page access and retry**. That grant is what makes a read work on a
+  tab you reached after opening the panel; it is never requested at install, and
+  it cannot make a read happen on its own. Chrome still refuses `executeScript`
+  on `chrome://` pages, the Web Store and PDFs, so a read that Chrome blocks
+  comes back as the `blocked` message above. We never ask for `tabs`, and never
+  read history or every open tab.

@@ -1166,7 +1166,15 @@ _PAGE_REFERENCE = re.compile(
     r"|prompt|problem|question|exercise|assignment)\b"
     r"|\b(?:what (?:i'?m|im|you'?re|youre) (?:reading|looking at))\b"
     r"|\b(?:on|from) (?:my|the) screen\b"
-    r"|\bread (?:this|that|it) (?:to me|out loud|aloud)\b",
+    r"|\bread (?:this|that|it) (?:to me|out loud|aloud)\b"
+    # The ask that named the job rather than the page: "analyze this", "summarize
+    # this article" is the student pointing at what they are reading. Only the
+    # deictics that can mean a page - "summarize it" is not here, because it more
+    # often means the reply they just heard, and reading a page they did not mean
+    # is the one mistake this feature must not make.
+    r"|\b(?:analy[sz]e|summari[sz]e|sum up|sk[ie]m|review)\s+(?:this|that|these|those)\b"
+    r"|\bwhat (?:does|is) (?:this|that) (?:say|about)\b"
+    r"|\bthe gist of (?:this|that)\b",
     re.IGNORECASE,
 )
 

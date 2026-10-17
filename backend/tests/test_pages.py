@@ -57,6 +57,16 @@ class TestPageReference(unittest.TestCase):
             "help me with what I'm reading",
             "what's on my screen",
             "read this out loud",
+            # The ask that named the job rather than the page. This is the one the
+            # panel used to miss: the words "analyze" and "summarize" were not
+            # enough on their own, so the page was never read and the answer came
+            # back generic.
+            "analyze this page",
+            "analyse this page",
+            "summarize this",
+            "summarise this article",
+            "give me the gist of this",
+            "what does this say",
         ]:
             with self.subTest(text=text):
                 self.assertTrue(server.page_requested(text))
@@ -71,6 +81,11 @@ class TestPageReference(unittest.TestCase):
             "tell me about the periodic table",
             "plan my week",
             "what is a ketone?",
+            # "summarize it" is deliberately not a page reference: it usually
+            # means the reply they just heard, and reading a page they did not
+            # point at is the mistake this gate exists to prevent.
+            "summarize it",
+            "analyze my essay",
         ]:
             with self.subTest(text=text):
                 self.assertFalse(server.page_requested(text))
@@ -395,6 +410,22 @@ class TurnTestCase(unittest.TestCase):
         self.assertEqual(payload["skill"], "study_breakdown")
         self.assertFalse(payload["page_text_used"])
         self.assertNotIn("chloroplast", self.client.prompts[-1])
+
+    def test_the_summary_skill_gets_the_page_and_a_summary_shaped_prompt(self):
+        """"analyze this page" is a summary request, not an explanation."""
+        self.client.decision = {
+            "skill": "page_summary",
+            "args": {"level": "some background"},
+            "needs_confirmation": False,
+        }
+        status, payload, _ = self.turn("analyze this page", page_text=PAGE)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["skill"], "page_summary")
+        self.assertTrue(payload["page_text_used"])
+        prompt = self.client.prompts[-1]
+        self.assertIn("chloroplast", prompt)
+        self.assertIn("Summarise the page", prompt)
+        self.assertIn("4 sentences", prompt)
 
     def test_the_general_path_uses_the_page_only_because_it_was_invoked(self):
         self.client.decision = {"skill": "general", "args": {}, "needs_confirmation": False}

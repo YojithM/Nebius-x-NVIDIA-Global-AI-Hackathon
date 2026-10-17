@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Cadence — study assistant",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Click to talk. A calm study assistant that knows your classes, deadlines, and weak topics.",
   "minimum_chrome_version": "116",
 
@@ -11,6 +11,11 @@
     "http://127.0.0.1:8787/*",
     "http://localhost:8787/*",
     "https://*.nebius.cloud/*"
+  ],
+
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
   ],
 
   "background": {

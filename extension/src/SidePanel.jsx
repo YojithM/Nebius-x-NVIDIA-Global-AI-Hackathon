@@ -22,8 +22,10 @@ import ProgressTab from './ProgressTab.jsx'
 import CalendarOffer from './CalendarOffer.jsx'
 import {
   getPageContext,
+  pageAccessGranted,
   pageReadingSupported,
   readPageText,
+  requestPageAccess,
   utteranceReadsPage,
 } from './pageContext.js'
 import { MIC_BAR_HEIGHTS } from './micLevel.js'
@@ -57,8 +59,18 @@ const PAGE_READ_ERRORS = {
     'I can’t read pages here — this isn’t running as a Chrome extension. Ask without the page and I’ll still answer.',
   'no-tab': 'I couldn’t find the tab you’re on.',
   blocked:
-    'Chrome wouldn’t let me read this tab. Click the Cadence icon again while you’re on it, then ask.',
+    'Chrome wouldn’t let me read this tab. If it’s a chrome:// page or the web store, it can’t be read at all — otherwise grant access below.',
   empty: 'That page had no readable text — it may be an image or a PDF.',
+}
+
+// Shown when the read failed for want of permission, which is the one page
+// failure the student can fix in a click. The sentences are separate from the
+// button so the button has a job rather than a paragraph to explain it.
+const PAGE_ACCESS_TEXT = {
+  denied: 'Chrome needs your permission before I can read a page. I’ll ask again next time you try.',
+  gesture:
+    'Chrome only grants page access from a click, so use Read this page (or the button here) rather than asking by voice.',
+  unsupported: 'This panel isn’t running as a Chrome extension, so it can’t read pages at all.',
 }
 
 /**
@@ -150,6 +162,10 @@ export default function SidePanel() {
   // question and is spent when that question is sent, so a page read can never
   // become a standing setting that quietly reads everything afterwards.
   const [pageArmed, setPageArmed] = useState(false)
+  // The utterance whose page read was refused for lack of host access. Held so
+  // the panel can offer the grant *and run that same question again*: the
+  // student already asked, and making them ask twice was the old behaviour.
+  const [pageBlocked, setPageBlocked] = useState(null)
   const [notice, setNotice] = useState('')
   // The open quiz, reported by the backend on every turn. The panel does not
   // decide whether a quiz is running - it shows what the backend says, so the
@@ -367,7 +383,14 @@ export default function SidePanel() {
     say(data.reply)
   }, [say, remember, maybeSummarize])
 
-  const runTurn = useCallback(async (text) => {
+  const runTurn = useCallback(async (text, options = {}) => {
+    // `reask` is the Allow-and-retry path: the same question, sent again after
+    // the student granted page access. It must not add a second copy of the
+    // utterance to the transcript or the conversation - the first one is still
+    // there, unanswered - and it must not add it to the note's bookkeeping
+    // either. `forcePage` is what makes that second send read the page, because
+    // the arm was spent by the first attempt.
+    const { reask = false, forcePage = false } = options
     // Snapshotted before the current utterance is added to the transcript: the
     // request carries the conversation that led here, and the utterance itself
     // travels as `transcript`. Reading the ref later would send it twice, because
@@ -375,13 +398,15 @@ export default function SidePanel() {
     const history = recentMessages(conversationRef.current)
     // The note of everything older than that window, when the panel has one.
     const sessionSummary = summaryRef.current
-    remember('you', text)
+    if (!reask) {
+      remember('you', text)
+      setTurns((prev) =>
+        [...prev, { role: 'you', text }].slice(-MAX_TURNS_IN_VIEW),
+      )
+    }
     setStatus('thinking')
     setError('')
     setNotice('')
-    setTurns((prev) =>
-      [...prev, { role: 'you', text }].slice(-MAX_TURNS_IN_VIEW),
-    )
 
     // Arms are spent here, whatever happens next: a page read belongs to one
     // question, and an arm that survived a failed turn would be a surprise page
@@ -396,12 +421,22 @@ export default function SidePanel() {
 
       // The page BODY only when the student asked for it — with the button, or in
       // the sentence itself. This is the whole policy, and it is two lines.
-      const asked = armed || utteranceReadsPage(text)
+      const asked = armed || forcePage || utteranceReadsPage(text)
       let page = null
       if (asked) {
         const read = await readPageText()
-        if (read.error) setNotice(PAGE_READ_ERRORS[read.error] || PAGE_READ_ERRORS.empty)
-        else page = read
+        if (read.error) {
+          setNotice(PAGE_READ_ERRORS[read.error] || PAGE_READ_ERRORS.empty)
+          // A read that failed for want of a permission we can ask for is
+          // recoverable, so it keeps the utterance. Anything else (an empty
+          // page, a chrome:// tab) is not, and offering a button would be a lie.
+          setPageBlocked(read.needsPermission ? { text } : null)
+        } else {
+          page = read
+          setPageBlocked(null)
+        }
+      } else {
+        setPageBlocked(null)
       }
 
       // Reported on every turn, including the ones that are not about the quiz.
@@ -443,6 +478,27 @@ export default function SidePanel() {
     // student's Read this page. The mic callbacks reach this through
     // runTurnRef, which the effect below keeps current.
   }, [pageArmed, showReply])
+
+  /**
+   * Grant page access, then answer the question that could not be answered.
+   *
+   * The retry is the part that matters: the student asked once, and being made
+   * to ask again because a permission dialog interrupted them is the difference
+   * between a feature that works and one that seems to ignore them. `reask`
+   * suppresses the second copy of the utterance; `forcePage` reads the page the
+   * first attempt was refused for, because that attempt spent the arm.
+   */
+  const allowPageAndRetry = useCallback(async () => {
+    const blocked = pageBlocked
+    if (!blocked) return
+    const access = await requestPageAccess()
+    if (!access.granted) {
+      setNotice(PAGE_ACCESS_TEXT[access.error] || PAGE_ACCESS_TEXT.denied)
+      return
+    }
+    setPageBlocked(null)
+    runTurnRef.current(blocked.text, { reask: true, forcePage: true })
+  }, [pageBlocked])
 
   /**
    * Answer a question the backend asked (Step 10).
@@ -854,6 +910,30 @@ export default function SidePanel() {
       {tab === 'today' && !error && notice && <p className="notice">{notice}</p>}
 
       {/*
+        The page the student asked about, and the one failure of that read they
+        can fix. The button is the whole point: without it the grant was a
+        permission nobody knew to give, and every "analyze this page" came back
+        as a generic answer with a sentence of explanation above it.
+      */}
+      {tab === 'today' && pageBlocked && (
+        <div className="notice page-help">
+          <p>
+            <strong>I couldn’t read that page.</strong> Chrome needs your permission
+            first. I ask once here, and I only read a page when you ask me to —
+            never in the background.
+          </p>
+          <button
+            type="button"
+            className="allow"
+            disabled={status === 'thinking'}
+            onClick={allowPageAndRetry}
+          >
+            Allow page access and retry
+          </button>
+        </div>
+      )}
+
+      {/*
         A blocked microphone, answered with the fix rather than a description of
         it. Two things this panel knows that a generic error cannot: the
         extension's own origin (so the settings URL is exact), and the fact that
@@ -979,7 +1059,26 @@ export default function SidePanel() {
                 ? 'Read the text of this tab and use it for your next question — once.'
                 : 'Only available when Cadence runs as a Chrome extension.'
             }
-            onClick={() => setPageArmed((prev) => !prev)}
+            onClick={async () => {
+              // Un-arming never needs permission; arming does, because the read
+              // it promises happens on the next turn. Asking here means the
+              // grant arrives on a click, which is the only gesture Chrome
+              // accepts, instead of failing silently ten seconds later.
+              if (pageArmed) {
+                setPageArmed(false)
+                return
+              }
+              if (await pageAccessGranted()) {
+                setPageArmed(true)
+                return
+              }
+              const access = await requestPageAccess()
+              if (access.granted) {
+                setPageArmed(true)
+                return
+              }
+              setNotice(PAGE_ACCESS_TEXT[access.error] || PAGE_ACCESS_TEXT.denied)
+            }}
           >
             {pageArmed ? 'Reading this page ✓' : 'Read this page'}
           </button>
@@ -1026,6 +1125,8 @@ export default function SidePanel() {
               conversationRef.current = []
               summaryRef.current = ''
               summarizedRef.current = 0
+              // A pending page question belongs to the cleared conversation.
+              setPageBlocked(null)
               // Clearing the transcript does not end a quiz: the backend is the
               // one holding it, and the line above comes back on the next turn.
               setStatus('idle')

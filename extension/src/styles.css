@@ -1292,6 +1292,47 @@ body {
   color: var(--text);
 }
 
+/* ---------- a page we were not allowed to read ---------- */
+
+/* The same shape as a blocked microphone, because it is the same situation: a
+   permission the student can grant in one click, described next to the click.
+   The button is full width so it reads as the next step, not a footnote. */
+.page-help {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.page-help p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.page-help strong {
+  color: var(--text);
+}
+
+.page-help .allow {
+  align-self: flex-start;
+  padding: 8px 12px;
+  border: 1px solid var(--surface-2);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.page-help .allow:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.page-help .allow:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* The URL is the whole remedy, so it is selectable, monospaced, and wrapped
    rather than clipped: a link they cannot copy by hand is not a fix. */
 .mic-url {
