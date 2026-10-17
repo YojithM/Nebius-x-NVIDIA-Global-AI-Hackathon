@@ -399,128 +399,28 @@ body {
   color: var(--muted);
 }
 
-/* ---------- the brief (Step 8) ---------- */
+/* ---------- the calendar offer (Step 12) ---------- */
 
-.brief {
-  margin: 10px 12px 0;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: var(--surface);
-  /* A tinted edge rather than a solid fill: the brief sits at the top of a screen
-     the student is working in, and it should read as a note, not an alarm. */
-  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
-}
-
-.brief h2 {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin: 0 0 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.brief .count {
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
-  opacity: 0.7;
-}
-
-.brief-headline {
-  margin: 0;
-  font-size: 13px;
+/* One line, not a card: the brief that used to live here filled the top of the
+   tab, and the events it showed are answered in the transcript now. This is the
+   only calendar thing left on the screen, and only until it is used. */
+.calendar-offer {
+  margin: 8px 12px 0;
+  padding: 0 2px;
+  font-size: 12px;
   line-height: 1.45;
-}
-
-/* Overdue is the one thing here that is allowed to look like a problem. */
-.brief-urgent {
-  color: var(--danger);
-}
-
-.brief-nudges {
-  list-style: none;
-  margin: 6px 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 12.5px;
-}
-
-.brief-nudges li {
-  padding-left: 11px;
-  position: relative;
-}
-
-.brief-nudges li::before {
-  content: '·';
-  position: absolute;
-  left: 0;
   color: var(--muted);
 }
 
-.brief-line {
-  margin: 6px 0 0;
-  font-size: 12.5px;
-  line-height: 1.45;
-}
-
-.brief-muted {
-  color: var(--muted);
-}
-
-/* A label sitting above its own list: tightening the gap keeps the two from
-   reading as separate items in a stack. Weak topics are the student's own
-   sentences, so they stay in the normal text colour rather than the muted grey
-   used for the quiet lines. */
-.brief-label {
-  margin-bottom: 0;
-}
-
-.brief-label + .brief-topics {
-  margin-top: 3px;
-}
-
-/* ---------- the calendar half of the brief (Step 12) ---------- */
-
-/* Same list shape as the deadlines above it, with the bullet in the accent
-   colour: these lines come from somewhere else, and the difference should be
-   visible at a glance rather than only in the footnote below. */
-.brief-label + .brief-cal {
-  margin-top: 3px;
-}
-
-.brief-cal li::before {
-  color: var(--accent);
-}
-
-.brief-cal-foot {
-  margin: 6px 0 0;
-  font-size: 10.5px;
-  line-height: 1.4;
-  color: var(--muted);
-}
-
-/* The connect link is the one action in the brief, so it looks like one. */
-.brief .connect {
+/* The link is the one action here, so it looks like one. */
+.calendar-offer .connect {
   color: var(--accent);
   font-weight: 600;
   text-decoration: none;
 }
 
-.brief .connect:hover {
+.calendar-offer .connect:hover {
   text-decoration: underline;
-}
-
-.brief-foot {
-  margin: 8px 0 0;
-  font-size: 10.5px;
-  line-height: 1.4;
-  color: var(--muted);
 }
 
 /* ---------- header ---------- */

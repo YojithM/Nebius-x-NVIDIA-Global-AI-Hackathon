@@ -13,7 +13,7 @@ import { answerApproval, BackendUnreachableError, checkHealth, sendTurn } from '
 import LogTab from './LogTab.jsx'
 import MemoryTab from './MemoryTab.jsx'
 import ProgressTab from './ProgressTab.jsx'
-import TodayBrief from './TodayBrief.jsx'
+import CalendarOffer from './CalendarOffer.jsx'
 import {
   getPageContext,
   pageReadingSupported,
@@ -565,10 +565,10 @@ export default function SidePanel() {
       {tab === 'progress' && <ProgressTab />}
       {tab === 'log' && <LogTab />}
 
-      {/* Above the transcript and above the quiz line: what is due is the thing
-          the student came to the tab for. Keyed on the turn count so a new
-          "remember ..." shows up here without a reload. */}
-      {tab === 'today' && <TodayBrief refreshKey={turns.length} />}
+      {/* One quiet line, and only until the calendar is connected - see
+          CalendarOffer for why the brief that used to sit here is gone. Keyed on
+          the turn count so a connection finished in another tab is noticed. */}
+      {tab === 'today' && <CalendarOffer refreshKey={turns.length} />}
 
       {tab === 'today' && quiz && (
         <p className="quiz-line">

@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Cadence — study assistant",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Click to talk. A calm study assistant that knows your classes, deadlines, and weak topics.",
   "minimum_chrome_version": "116",
 
-  "permissions": ["sidePanel", "activeTab", "scripting"],
+  "permissions": ["sidePanel", "activeTab", "scripting", "alarms", "notifications", "storage"],
 
   "host_permissions": [
     "http://127.0.0.1:8787/*",

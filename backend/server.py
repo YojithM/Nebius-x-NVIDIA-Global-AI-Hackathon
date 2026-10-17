@@ -152,7 +152,10 @@ LOG_TAIL_BYTES = 256 * 1024
 # read when the brief is requested, never polled in the background, so a quiet
 # laptop makes no requests to Google at all. See `backend/gcal.py` for the flow
 # and for why the scope is the narrow one.
-CALENDAR = gcal.TokenStore()
+# Two accounts, one token file: a personal calendar and a school one are different
+# accounts, and a week that is half invisible reads as a free week. `Accounts` also
+# reads the single-account file Step 12 wrote, so an existing connection survives.
+CALENDAR = gcal.Accounts()
 # The connect attempts this process has started. In memory on purpose: a state that
 # survives a restart is a state with a longer life than the sign-in it belongs to.
 CALENDAR_PENDING = gcal.PendingFlows()
@@ -2152,19 +2155,48 @@ class Handler(BaseHTTPRequestHandler):
             self._html(400, "Could not finish the sign-in", str(exc))
             return
 
-        CALENDAR.save(tokens)
+        # Which account this is, before storing it: the primary calendar's id is
+        # the account's address, and the label is what lets two accounts be told
+        # apart in a line. A failure here is not a failed connection - the account
+        # lands under a generic label instead.
+        # Only an `Accounts` store needs a label; a single-account `TokenStore`
+        # has nowhere to put one, so it is not worth a request - and not worth a
+        # network call inside a test that installed that store.
+        identity = (
+            gcal.account_identity(tokens.get("access_token") or "")
+            if hasattr(CALENDAR, "count")
+            else ""
+        )
+        try:
+            # A single-account `TokenStore` (what the older tests install) takes no
+            # label; an `Accounts` does, and that label is what labels a line.
+            if hasattr(CALENDAR, "count"):
+                label = CALENDAR.save(tokens, account=identity or None)
+            else:
+                CALENDAR.save(tokens)
+                label = identity or gcal.DEFAULT_ACCOUNT_LABEL
+        except gcal.CalendarError as exc:
+            self._log("calendar_callback", outcome=exc.code)
+            self._html(400, "Could not store the connection", str(exc))
+            return
         gcal.forget()
         # Logged as a fact we verify rather than a fact we assume: the scope Google
         # actually granted is in its token response, and read-only is what makes
         # "I cannot change your calendar" true rather than aspirational.
         granted = tokens.get("scope") or ""
-        self._log("calendar_connected", read_only="readonly" in granted)
+        self._log(
+            "calendar_connected",
+            read_only="readonly" in granted,
+            accounts=CALENDAR.count() if hasattr(CALENDAR, "count") else 1,
+        )
         self._html(
             200,
             "Connected",
-            "Cadence can see the events on your calendar and cannot change "
-            "anything on it - the permission it holds is read-only, so even a bug "
-            "in here could not edit your calendar. Disconnect any time with "
+            "Cadence can see the events on "
+            + label
+            + " and cannot change anything on it - the permission it holds is "
+            "read-only, so even a bug in here could not edit your calendar. "
+            "Connect a second account the same way; disconnect any time with "
             "DELETE /calendar.",
         )
 
@@ -2311,6 +2343,11 @@ class Handler(BaseHTTPRequestHandler):
                         # button they can press.
                         "configured": gcal.configured(),
                         "connected": bool(CALENDAR.connected) and not DEMO_MODE,
+                        # How many accounts are behind the one connection - the
+                        # panel only needs to know whether there is more than one,
+                        # and labels appear in the lines when there is.
+                        "accounts": CALENDAR.count() if hasattr(CALENDAR, "count") else 1,
+                        "max_accounts": gcal.MAX_ACCOUNTS,
                         "read_only": True,
                         "scope": gcal.SCOPE,
                         "off": "demo" if DEMO_MODE else None,
@@ -2440,9 +2477,20 @@ class Handler(BaseHTTPRequestHandler):
             # Forgetting the calendar is one file and no second thought: the
             # student's only route back is to delete what we stored, so this is
             # idempotent and answers with the state it left behind.
-            removed = CALENDAR.clear()
+            # `?account=<address>` forgets one account; without it, all of them.
+            account = (parse_qs(parsed.query).get("account") or [""])[0] or None
+            # A single-account `TokenStore` (what the older tests install) has no
+            # idea what an account is, and does not need to: it forgets everything.
+            if account and hasattr(CALENDAR, "count"):
+                removed = CALENDAR.clear(account)
+            else:
+                removed = CALENDAR.clear()
             gcal.forget()
-            self._log("calendar_disconnect", removed=bool(removed))
+            self._log(
+                "calendar_disconnect",
+                removed=bool(removed),
+                accounts=CALENDAR.count() if hasattr(CALENDAR, "count") else 0,
+            )
             payload = gcal.not_connected_payload(configured_now=gcal.configured())
             payload["removed"] = bool(removed)
             self._send(200, payload)
@@ -3416,10 +3464,14 @@ def main():
         print(
             "  calendar: read-only Google Calendar - "
             + (
-                "connected"
-                if CALENDAR.connected
-                else "not connected yet; connect from the panel, or GET "
-                "/oauth/google/start"
+                (
+                    "connected ({0} account{1})".format(
+                        CALENDAR.count(), "" if CALENDAR.count() == 1 else "s"
+                    )
+                    if CALENDAR.connected
+                    else "not connected yet; connect from the panel, or GET "
+                    "/oauth/google/start"
+                )
             ),
             flush=True,
         )

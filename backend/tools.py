@@ -703,7 +703,8 @@ def read_calendar(days=None, *, section=None, today=None):
             str(
                 payload.get("explanation")
                 or "the student's Google Calendar is not connected, so there is "
-                "nothing to read. They can connect it from the brief."
+                "nothing to read. They can connect it from the Today tab of the "
+                "panel, where the Connect Google Calendar link is."
             ),
             "not_connected",
         )

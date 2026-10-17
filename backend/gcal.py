@@ -526,6 +526,18 @@ class TokenStore:
                 handle.write(text)
             os.chmod(self.path, 0o600)
 
+    def relabel(self, label: str) -> str:
+        """Remember which account this file holds. -> the label.
+
+        The single-account file has no place for a name, so the name is written
+        into it as `account`; `Accounts` reads that key when it adopts the file.
+        """
+        label = str(label or "").strip()
+        if not label:
+            return ""
+        self.save({"account": label})
+        return label
+
     def clear(self) -> bool:
         """Forget everything. -> whether there was anything to forget."""
         with self._lock:
@@ -689,7 +701,12 @@ def list_calendars(
     # whatever order Google happened to return.
     calendars.sort(key=lambda cal: (not cal.get("primary"), cal["name"].lower()))
     capped = calendars[:MAX_CALENDARS]
-    return [{"id": cal["id"], "name": cal["name"]} for cal in capped]
+    # `primary` survives, because the primary calendar's id is the account's
+    # address - which is how an account connected before labels existed gets one.
+    return [
+        {"id": cal["id"], "name": cal["name"], "primary": bool(cal.get("primary"))}
+        for cal in capped
+    ]
 
 
 def fetch_events(
@@ -751,6 +768,7 @@ def fetch_from_calendars(
     now: Optional[datetime] = None,
     horizon_days: int = DEFAULT_HORIZON_DAYS,
     transport: Optional[Transport] = None,
+    account: Optional[str] = None,
 ) -> Tuple[List[dict], bool, List[dict]]:
     """Merge every calendar into one ordered list. -> (events, more, failures).
 
@@ -811,6 +829,7 @@ def fetch_from_calendars(
                     continue
                 seen.add(event["id"])
             event["calendar"] = calendar["name"]
+            event["account"] = account
             events.append(event)
 
     events.sort(key=lambda event: (event["_start"], event["title"]))
@@ -893,10 +912,239 @@ def parse_events(
     return parsed
 
 
+# ----------------------------------------------------------- more than one ---
+#
+# One Google account was the whole of Step 12, and it is the wrong shape for the
+# student this is built for: a personal calendar and a school calendar are two
+# different accounts. A week that is half invisible does not look broken, it looks
+# free, which is the same failure as a calendar with no events.
+
+MAX_ACCOUNTS = 2
+DEFAULT_ACCOUNT_LABEL = "Connected Google account"
+
+
+class Accounts:
+    """Up to two Google accounts, kept in one token file.
+
+    The file keeps the shape Step 12 wrote - a flat object with `refresh_token` at
+    the top - and is *read* that way, so an existing connection survives this
+    upgrade with no migration step and no second consent screen. The first write
+    turns it into `{"accounts": {"<the address>": {...tokens...}}}`, keyed by the
+    account's own address: that key is what makes reconnecting an expired account
+    replace it instead of adding a second copy of the same person.
+
+    Two accounts, not two hundred. The cap is the feature the student asked for
+    and a bound on a file that is read on every brief; past it, `save` refuses
+    rather than silently dropping one.
+    """
+
+    def __init__(self, path: Optional[Path] = None):
+        self._path = Path(path) if path is not None else None
+        self._lock = threading.RLock()
+
+    @property
+    def path(self) -> Path:
+        return self._path or token_path()
+
+    def _read(self) -> Dict[str, dict]:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        accounts = raw.get("accounts")
+        if isinstance(accounts, dict):
+            return {
+                str(label): dict(tokens)
+                for label, tokens in accounts.items()
+                if isinstance(tokens, dict) and tokens.get("refresh_token")
+            }
+        if raw.get("refresh_token"):
+            # The single-account file, read as an account rather than rewritten.
+            label = str(raw.get("account") or "").strip() or DEFAULT_ACCOUNT_LABEL
+            return {label: {k: v for k, v in raw.items() if k != "account"}}
+        return {}
+
+    def _write(self, accounts: Dict[str, dict]) -> None:
+        text = json.dumps({"accounts": accounts}, indent=2, sort_keys=True)
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            # Create with the mode already set, then set it again: `open(..., "w")`
+            # on an existing file keeps its old mode.
+            with open(self.path, "w", encoding="utf-8") as handle:
+                os.chmod(self.path, 0o600)
+                handle.write(text)
+            os.chmod(self.path, 0o600)
+
+    def labels(self) -> List[str]:
+        """Every connected account's label, sorted so the brief does not shuffle."""
+        return sorted(self._read())
+
+    def count(self) -> int:
+        return len(self._read())
+
+    @property
+    def connected(self) -> bool:
+        return bool(self._read())
+
+    def stores(self) -> List[Tuple[str, "TokenStore"]]:
+        """-> [(label, one account's token store)] in a stable order."""
+        return [(label, _AccountStore(self, label)) for label in self.labels()]
+
+    def _next_label(self) -> str:
+        """A label for an account we could not identify.
+
+        Nobody should lose a connection because the *name* lookup failed: an
+        unnamed account gets its own label rather than overwriting the one that
+        already has the default.
+        """
+        accounts = self._read()
+        if DEFAULT_ACCOUNT_LABEL not in accounts:
+            return DEFAULT_ACCOUNT_LABEL
+        for number in range(2, MAX_ACCOUNTS + 1):
+            candidate = "Google account {0}".format(number)
+            if candidate not in accounts:
+                return candidate
+        return DEFAULT_ACCOUNT_LABEL
+
+    def save(self, tokens: dict, account: Optional[str] = None) -> str:
+        """Store or replace one account. -> the label it was stored under."""
+        label = str(account or "").strip() or self._next_label()
+        merged = dict(self._read().get(label) or {})
+        merged.update(tokens)
+        if not merged.get("refresh_token"):
+            raise CalendarError(
+                "Google sent no refresh token, so the connection cannot be kept. "
+                "Try connecting again.",
+                "bad_response",
+            )
+        self._save_label(label, merged)
+        return label
+
+    def _save_label(self, label: str, tokens: dict) -> None:
+        with self._lock:
+            accounts = self._read()
+            if label not in accounts and len(accounts) >= MAX_ACCOUNTS:
+                raise CalendarError(
+                    "this build keeps {0} Google accounts, and both slots are "
+                    "taken. Disconnect one first (DELETE /calendar).".format(MAX_ACCOUNTS),
+                    "too_many",
+                )
+            accounts[label] = dict(tokens)
+            self._write(accounts)
+
+    def relabel(self, old: str, new: str) -> bool:
+        """Rename an account whose address we have just learned. -> whether it moved.
+
+        Refuses to write over an existing label: two accounts that both report the
+        same address would otherwise silently become one.
+        """
+        with self._lock:
+            accounts = self._read()
+            if old not in accounts or not new or old == new or new in accounts:
+                return False
+            accounts[new] = accounts.pop(old)
+            self._write(accounts)
+            return True
+
+    def clear(self, account: Optional[str] = None) -> bool:
+        """Forget one account, or all of them. -> whether anything was removed."""
+        with self._lock:
+            accounts = self._read()
+            if account is None:
+                if not accounts and not self.path.exists():
+                    return False
+                try:
+                    self.path.unlink()
+                except FileNotFoundError:
+                    return False
+                except OSError as exc:
+                    raise CalendarError(
+                        "could not delete the stored Google tokens: {0}".format(exc),
+                        "failed",
+                    ) from None
+                return True
+            if account not in accounts:
+                return False
+            accounts.pop(account)
+            if accounts:
+                self._write(accounts)
+            else:
+                self.clear()
+            return True
+
+
+class _AccountStore(TokenStore):
+    """One account inside `Accounts`, wearing `TokenStore`'s interface.
+
+    A view, not a copy: the access token, the early refresh and the "keep the old
+    refresh token" rule are `TokenStore`'s, unchanged - only where the bytes live
+    is different.
+    """
+
+    def __init__(self, accounts: Accounts, label: str):
+        self._accounts = accounts
+        self._label = label
+        self._path = accounts.path
+        self._lock = accounts._lock
+
+    def load(self) -> dict:
+        return dict(self._accounts._read().get(self._label) or {})
+
+    def save(self, tokens: dict) -> None:
+        merged = dict(self.load())
+        merged.update(tokens)
+        self._accounts._save_label(self._label, merged)
+
+    def clear(self) -> bool:
+        return self._accounts.clear(self._label)
+
+    def relabel(self, label: str) -> str:
+        label = str(label or "").strip()
+        if not label or label == self._label:
+            return self._label
+        if self._accounts.relabel(self._label, label):
+            self._label = label
+            return label
+        return self._label
+
+
+def account_identity(access_token: str, *, transport: Optional[Transport] = None) -> str:
+    """Which Google account is this? -> its address, or "" when unknown.
+
+    There is no endpoint for "who am I" within `calendar.readonly`, and asking for
+    `email` would widen a scope that is deliberately one line. The primary
+    calendar's id *is* the account's address, and it comes from the same list we
+    read anyway - so the label costs no permission at all.
+    """
+    query = urllib.parse.urlencode(
+        {"maxResults": "50", "fields": "items(id,primary)", "minAccessRole": "reader"}
+    )
+    url = "{0}/users/me/calendarList?{1}".format(API_BASE, query)
+    try:
+        status, text = _call(
+            "GET",
+            url,
+            headers={"Authorization": "Bearer {0}".format(access_token)},
+            transport=transport,
+        )
+        payload = _json_or_error(status, text, what="identifying your account")
+    except CalendarError:
+        return ""
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return ""
+    for item in items:
+        if isinstance(item, dict) and item.get("primary"):
+            return str(item.get("id") or "").strip()
+    return ""
+
+
 # ----------------------------------------------------------- the brief part ---
 
 
-def _phrase(event: dict, show_source: bool = False) -> str:
+def _phrase(event: dict, show_source: bool = False, show_account: bool = False) -> str:
     """One line about one event, in the brief's voice.
 
     Composed here rather than by a model, for the same reason the deadline lines
@@ -907,7 +1155,15 @@ def _phrase(event: dict, show_source: bool = False) -> str:
     noise repeated down the list.
     """
     away = int(event.get("days_away") or 0)
-    source = " · {0}".format(event["calendar"]) if show_source and event.get("calendar") else ""
+    # Where a line came from, innermost first: the calendar, then the account. Both
+    # are dropped when there is only one of them - a suffix repeated down every
+    # line is noise, and noise is what the student learns to skip.
+    where = []
+    if show_source and event.get("calendar"):
+        where.append(str(event["calendar"]))
+    if show_account and event.get("account"):
+        where.append(str(event["account"]))
+    source = " · {0}".format(" · ".join(where)) if where else ""
     if event.get("ongoing"):
         detail = " (until {0})".format(event["end_time"]) if event.get("end_time") else ""
         return "now — {0}{1}{2}".format(event["title"], detail, source)
@@ -936,6 +1192,7 @@ def compose(
     horizon_days: int = DEFAULT_HORIZON_DAYS,
     more: bool = False,
     calendars: Optional[Sequence[dict]] = None,
+    accounts: Optional[Sequence[dict]] = None,
 ) -> dict:
     """The calendar half of the brief, as JSON-ready data.
 
@@ -951,6 +1208,8 @@ def compose(
         if isinstance(cal, dict)
     ]
     show_source = len(sources) > 1
+    account_rows = [dict(row) for row in (accounts or []) if isinstance(row, dict)]
+    show_account = len(account_rows) > 1
     return {
         "connected": True,
         "read_only": True,
@@ -960,12 +1219,19 @@ def compose(
         # `calendars` is the answer to "where did these lines come from".
         "calendar": CALENDAR_ID,
         "calendars": sources,
+        "accounts": account_rows,
+        # What the panel needs to offer a second connection, and to stop offering
+        # it once both slots are used.
+        "max_accounts": MAX_ACCOUNTS,
         "horizon_days": int(horizon_days),
         "events": [
             {key: value for key, value in event.items() if not key.startswith("_")}
             for event in shown
         ],
-        "lines": [_phrase(event, show_source=show_source) for event in shown],
+        "lines": [
+            _phrase(event, show_source=show_source, show_account=show_account)
+            for event in shown
+        ],
         "counts": {
             "events": len(shown),
             "today": len([event for event in shown if int(event.get("days_away") or 0) <= 0]),
@@ -995,6 +1261,9 @@ def not_connected_payload(*, configured_now: Optional[bool] = None, explanation:
         "scope": SCOPE,
         "scope_summary": SCOPE_SUMMARY,
         "calendar": CALENDAR_ID,
+        "calendars": [],
+        "accounts": [],
+        "max_accounts": MAX_ACCOUNTS,
         "events": [],
         "lines": [],
         "counts": {"events": 0, "today": 0, "all_day": 0, "more": False},
@@ -1034,8 +1303,46 @@ def forget(key: Optional[str] = None) -> None:
             _CACHE.pop(key, None)
 
 
+def _resolve_label(account, label, calendars) -> Optional[str]:
+    """Name an account from the calendars we just read, if it has no name yet.
+
+    The connection made before two accounts existed is labelled "Connected Google
+    account", which is unhelpful the moment there is a second one. The primary
+    calendar's id is the address and it is already in hand, so the label is
+    upgraded in place - no extra request, no second consent screen.
+    """
+    if label and label != DEFAULT_ACCOUNT_LABEL:
+        return label
+    for calendar in calendars or []:
+        if not calendar.get("primary"):
+            continue
+        address = str(calendar.get("id") or "").strip()
+        if not address:
+            continue
+        relabel = getattr(account, "relabel", None)
+        if callable(relabel):
+            renamed = relabel(address)
+            if renamed:
+                return renamed
+        return address
+    return label
+
+
+def _account_sources(store) -> List[Tuple[Optional[str], "TokenStore"]]:
+    """Every account behind `store` -> [(label, token store)].
+
+    An `Accounts` knows its labels; a bare `TokenStore` is one account with no name
+    - which is what every caller written before there were two of them passes, and
+    what a single-account payload should keep looking like.
+    """
+    stores = getattr(store, "stores", None)
+    if callable(stores):
+        return list(stores())
+    return [(None, store)]
+
+
 def section(
-    store: "TokenStore",
+    store,
     *,
     today: date,
     horizon_days: int = DEFAULT_HORIZON_DAYS,
@@ -1061,69 +1368,125 @@ def section(
     if not configured():
         return not_connected_payload(configured_now=False)
 
-    tokens = store.load()
-    if not tokens.get("refresh_token"):
+    sources = [
+        (label, account)
+        for label, account in _account_sources(store)
+        if account.load().get("refresh_token")
+    ]
+    if not sources:
         return not_connected_payload(configured_now=True)
 
-    key = "calendar:all:{0}".format(int(horizon_days))
+    # The cache key names the accounts, so connecting a second one cannot be served
+    # the answer from before it existed.
+    key = "calendar:{0}:{1}".format(
+        ",".join(str(label or "default") for label, _ in sources), int(horizon_days)
+    )
     if use_cache:
         hit = cached(key)
         if hit is not None:
             return hit
 
-    try:
-        access = store.access_token(transport=transport)
-        # One list request, then one per calendar. The list is allowed to fail
-        # quietly back to the primary calendar; the events are not, because that
-        # is where a dead token surfaces.
-        calendars = list_calendars(access, transport=transport)
-        events, more, failures = fetch_from_calendars(
-            access,
-            calendars,
-            today=today,
-            now=now,
-            horizon_days=horizon_days,
-            transport=transport,
-        )
-        # Every calendar failing is not a partial week, it is no calendar at all -
-        # and an empty list would read as "your week is free", which is the one
-        # wrong answer worth going out of the way to avoid.
-        if failures and len(failures) >= len(calendars):
-            raise CalendarError(failures[0]["message"], failures[0]["code"])
-    except CalendarError as exc:
-        if exc.code == "reconnect":
-            store.clear()
-            forget(key)
-            return not_connected_payload(
-                configured_now=True,
-                explanation=str(exc),
+    events: List[dict] = []
+    failures: List[dict] = []
+    calendars_seen: List[dict] = []
+    account_rows: List[dict] = []
+    dead: List[str] = []
+    more = False
+
+    for label, account in sources:
+        try:
+            access = account.access_token(transport=transport)
+            # One list request, then one per calendar. The list is allowed to fail
+            # quietly back to the primary calendar; the events are not, because
+            # that is where a dead token surfaces.
+            calendars = list_calendars(access, transport=transport)
+            label = _resolve_label(account, label, calendars)
+            account_events, account_more, account_failures = fetch_from_calendars(
+                access,
+                calendars,
+                today=today,
+                now=now,
+                horizon_days=horizon_days,
+                transport=transport,
+                account=label,
             )
+        except CalendarError as exc:
+            if exc.code == "reconnect":
+                # This account's credential is dead; the other one is not our
+                # problem to lose. Clearing only this one is the whole reason the
+                # store is per-account.
+                account.clear()
+                dead.append(str(exc))
+                continue
+            failures.append(
+                {"account": label, "calendar": "", "code": exc.code, "message": str(exc)}
+            )
+            continue
+
+        if account_failures and len(account_failures) >= len(calendars):
+            # Every calendar on this account failed. Not a partial week - nothing
+            # from this account is visible, so it is reported rather than dropped.
+            failures.append(
+                {
+                    "account": label,
+                    "calendar": "",
+                    "code": account_failures[0]["code"],
+                    "message": account_failures[0]["message"],
+                }
+            )
+            continue
+
+        for failure in account_failures:
+            failures.append(dict(failure, account=label))
+        more = more or account_more
+        events.extend(account_events)
+        account_rows.append(
+            {"account": label or "", "calendars": [cal["name"] for cal in calendars]}
+        )
+        calendars_seen.extend(dict(cal, account=label) for cal in calendars)
+
+    if not account_rows:
+        forget(key)
+        if dead and len(dead) >= len(sources):
+            return not_connected_payload(configured_now=True, explanation=dead[0])
+        first = failures[0] if failures else {
+            "code": "failed",
+            "message": "Google Calendar could not be read just now.",
+        }
         return {
             "connected": True,
             "read_only": True,
             "scope": SCOPE,
             "scope_summary": SCOPE_SUMMARY,
             "calendar": CALENDAR_ID,
+            "calendars": [],
+            "accounts": [],
+            "max_accounts": MAX_ACCOUNTS,
             "horizon_days": int(horizon_days),
             "events": [],
             "lines": [],
             "counts": {"events": 0, "today": 0, "all_day": 0, "more": False},
             "cost_usd": 0.0,
             "source": "google-calendar",
-            "error": {"code": exc.code, "message": str(exc)},
+            "error": {"code": first["code"], "message": first["message"]},
             "generated_at": time.strftime("%H:%M:%S"),
         }
 
+    events.sort(key=lambda event: (event["_start"], event["title"]))
     payload = compose(
         events,
         today=today,
         horizon_days=horizon_days,
         more=more,
-        calendars=calendars,
+        calendars=calendars_seen,
+        accounts=account_rows,
     )
     if failures:
         # Said out loud rather than swallowed: a week that is missing a shared
         # calendar's events looks the same as a free week, and one of those is a
         # reason to check something.
         payload["calendar_errors"] = failures
+    if dead:
+        # An account that had to be forgotten while the other one answered.
+        payload["accounts_lost"] = dead
     return remember(key, payload) if use_cache else payload

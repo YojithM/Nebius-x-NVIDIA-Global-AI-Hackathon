@@ -62,19 +62,26 @@ Leave both unset and everything behaves exactly as it did before Step 7.
 
 ## The tabs
 
-**Today** is the voice loop, with the **brief** at the top: what is due, how
-soon, the weak topics you named, and whether a quiz is open — composed by the
-backend in code from your own files, so it costs nothing and nothing in it was
-invented by a model. Under those deadlines is a **From your calendar** section:
-events read live from Google Calendar, one line each, read-only — or a **Connect
-Google Calendar** link until you connect it. Setup is in the [repo
+**Today** is the voice loop and nothing else above it. There was a **brief** box at
+the top — what is due, the weak topics you named, then the next two weeks of
+events — and it has been removed: it answered a question nobody had asked, on
+every open, and took the top of a screen whose whole shape is a conversation. The
+calendar is now something you *ask about* (see [Connecting your
+calendar](#connecting-your-calendar)).
+
+The one thing left in that space is a single **Connect Google Calendar** line,
+shown only until a calendar is connected — a connection that cannot be made from
+the UI is not a feature, it is a config file. Once it is connected the line is
+gone, and so is every other bit of that box. Setup is in the [repo
 README](../README.md#let-cadence-see-your-calendar).
 
-Ask *"what's due this week"* or *"when is my next deadline?"* and the answer comes
-from your own files **in code**: no model call, no cost, and the same date the
-brief above it shows — the chip on the meta line reads `brief` in the grey
-server-chosen style, like `quiz`. A request that asks for work rather than a date
-(*"plan my week, I have six hours"*) still goes to the skill that does the work.
+Ask *"what's on my calendar this week?"* and the agent reads it with the
+`read_calendar` tool and answers in words, with the dates. Ask *"what's due this
+week"* or *"when is my next deadline?"* and the answer comes from your own files
+**in code**: no model call, no cost — the chip on the meta line reads `brief` in
+the grey server-chosen style, like `quiz`. A request that asks for work rather
+than a date (*"plan my week, I have six hours"*) still goes to the skill that
+does the work.
 
 The meta line under each reply tells you what the turn
 actually did, including the tools it ran: `general · 4443ms · $0.000986 · super ·
@@ -169,20 +176,39 @@ not a smaller number invented here.
 
 ## Connecting your calendar
 
-The brief has a calendar half once you connect one, and the connection is **one
-permission**: `calendar.readonly`. The Connect link opens the backend's own
-`/oauth/google/start` in a new tab, which sends you to Google and then back to
-`http://127.0.0.1:8787` — the loopback redirect Google documents for a desktop
-client. The page you land on says whether it worked and what was granted.
+The connection is **one permission**: `calendar.readonly`. The Connect link opens
+the backend's own `/oauth/google/start` in a new tab, which sends you to Google and
+then back to `http://127.0.0.1:8787` — the loopback redirect Google documents for a
+desktop client. The page you land on says whether it worked and what was granted;
+click back into the panel and the line is already gone, because the panel re-reads
+the calendar when it regains focus.
 
-Three states are worth knowing apart, because they look similar:
+Two states are worth knowing apart:
 
 - **no Connect link, just a sentence** — the backend has no `GOOGLE_CLIENT_ID`, so
   a connect cannot work and the panel says what to set instead of offering a
   button that would fail;
-- **Connect Google Calendar** — configured, not connected yet;
-- **From your calendar** — connected. If a read fails, the error appears under the
-  section and the deadlines above it are untouched.
+- **Connect Google Calendar** — configured, not connected yet. After it is
+  connected there is **nothing on the Today tab about the calendar at all**.
+
+A second Google account is the same link, with `Use another account` on Google's
+screen — otherwise Google reconnects the one you clicked. The link is not in the
+panel once a calendar is connected (nothing is), so open
+`http://127.0.0.1:8787/oauth/google/start` directly for the second one.
+
+**Reminders.** The extension now notifies you **10 minutes before a timed event**,
+with the event's title and its time and calendar, and clicking the notification
+opens the side panel. It checks every five minutes from the service worker rather
+than from the panel, because a reminder that only fires while the panel is open is
+not a reminder. All-day events are skipped (there is no moment to remind you at),
+an event already shown is never shown twice, and a machine that was asleep wakes up
+to at most three at once. Chrome asks for the notification permission when you
+reload the unpacked extension — that is the new `notifications` permission, along
+with `alarms` and `storage`.
+
+**One limit worth saying**: the reminders poll `127.0.0.1:8787` directly. A build
+pointed at a deployed backend with `CADENCE_TOKEN` set cannot authenticate from the
+service worker yet, so reminders are local-only for now.
 
 If the consent screen answers *access_denied*, the usual cause is an OAuth app in
 *testing* mode that does not list your Google account under **Test users**.
@@ -285,10 +311,11 @@ background reader: closing the panel stops it entirely.
   quiz is still open, live in `progress/*.md` on the backend. Closing the panel
   mid-quiz loses nothing: reopen it, or ask *"how am I doing"*, and the loop picks
   up where it was.
-- **No calendar writes, and no reminders.** The panel shows what is on your
-  calendar; nothing in the extension or the backend can create, move or delete an
-  event, because the token it holds cannot. It also does not push a notification
-  when something is about to start — the calendar section is a brief you open.
+- **No calendar writes.** Nothing in the extension or the backend can create,
+  move or delete an event, because the token it holds cannot. The notifications
+  are one-way: they read the same `/calendar` payload the panel asks for, ten
+  minutes before a timed event starts, and write nothing anywhere but a
+  `chrome.storage.local` key holding the ids already shown.
 - **No memory editing in the UI.** You can delete a note from the Memory tab, but
   adding or rewriting one means asking the assistant or editing the file. The
   file editing is the point, so this may stay that way.
@@ -311,7 +338,8 @@ background reader: closing the panel stops it entirely.
   `chrome.tabs`, so it returns no title and the turn proceeds without one — the
   meta line just omits `page:`; and `src/speech.js` finds no Web Speech API, so the
   mic does nothing and the **Read this page** button is disabled. The turn loop,
-  the brief, the tabs and the cost line are unchanged.
+  the tabs and the cost line are unchanged. The reminders do not run here: they
+  live in the extension's service worker, which a plain page does not have.
 - **The backend URL follows whoever served the page.** A build-time
   `VITE_BACKEND_URL` still wins, but with none set a panel served over HTTP talks
   to the origin that served it, and an extension (where `location.protocol` is

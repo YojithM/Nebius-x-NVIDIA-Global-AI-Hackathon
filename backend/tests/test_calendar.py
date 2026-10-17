@@ -30,6 +30,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 import urllib.parse
 from datetime import date, datetime, timedelta, timezone
@@ -760,12 +761,11 @@ class TestTheQuietPaths(CalendarTestCase):
         store.save({"expires_at": _time.time() + 3600})
         fake = FakeGoogle(events=[all_day_event("1", "Seminar", TODAY.isoformat())])
         gcal.section(store, today=TODAY, now=NOW, transport=fake)
-        # The key says `all` because the payload now covers every calendar the
-        # account can read; leaving it on one calendar's id would have served a
-        # cached primary-only week to someone who just added a second calendar.
-        self.assertIsNotNone(gcal.cached("calendar:all:7"))
+        # The key names the accounts as well as the window: a stored week that was
+        # read before a second account existed must not be served after it.
+        self.assertIsNotNone(gcal.cached("calendar:default:7"))
         gcal.forget()
-        self.assertIsNone(gcal.cached("calendar:all:7"))
+        self.assertIsNone(gcal.cached("calendar:default:7"))
 
 
 class TestMoreThanOneCalendar(CalendarTestCase):
@@ -1244,6 +1244,281 @@ class TestTheAgentCanReadTheCalendar(CalendarTestCase):
         self.assertEqual(result["reason"], "not_connected")
         self.assertIn("demo", result["text"].lower())
         self.assertEqual(self.seen, [], "the demo read the calendar anyway")
+
+
+class TestTwoAccounts(CalendarTestCase):
+    """Two Google accounts, and a line that says which one an event came from.
+
+    A personal calendar and a school calendar are different accounts. Before this,
+    the second one was simply invisible - and an invisible calendar does not look
+    broken, it looks free.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.configured()
+        self.accounts = gcal.Accounts(self.root / "accounts.json")
+
+    def add(self, address, access="token-a", minutes=60):
+        self.accounts.save(
+            {
+                "access_token": access,
+                "refresh_token": "refresh-" + address,
+                "expires_at": time.time() + minutes * 60,
+            },
+            account=address,
+        )
+
+    def google(self, events_by_token):
+        """A transport that answers per *account*, which is the thing under test."""
+        calls = []
+
+        def transport(method, url, headers, body, timeout):
+            calls.append(url)
+            if "/token" in url:
+                if "refresh-invalid" in str(body):
+                    return 400, json.dumps({"error": "invalid_grant"})
+                return 200, json.dumps({"access_token": "refreshed", "expires_in": 3600})
+            if "/calendarList" in url:
+                return 200, json.dumps(
+                    {"items": [{"id": "primary", "summary": "Primary", "primary": True}]}
+                )
+            if "/events" in url:
+                token = str((headers or {}).get("Authorization") or "").split()[-1]
+                return 200, json.dumps({"items": list(events_by_token.get(token, []))})
+            raise AssertionError("unexpected URL: " + url)
+
+        transport.calls = calls
+        return transport
+
+    def event(self, event_id, summary, **delta):
+        start = NOW + timedelta(**delta)
+        return timed_event(event_id, summary, iso(start), iso(start + timedelta(hours=1)))
+
+    # -- storage ------------------------------------------------------------
+
+    def test_the_file_step_twelve_wrote_is_read_as_one_account(self):
+        legacy = self.root / "google-token.json"
+        legacy.write_text(
+            json.dumps(
+                {
+                    "access_token": "old",
+                    "refresh_token": "old-refresh",
+                    "expires_at": time.time() + 3600,
+                }
+            )
+        )
+        accounts = gcal.Accounts(legacy)
+        self.assertEqual(accounts.count(), 1)
+        self.assertTrue(accounts.connected)
+        # No rewrite on read: the existing connection is read where it lies.
+        self.assertIn("refresh_token", json.loads(legacy.read_text()))
+        self.assertEqual(accounts.labels(), [gcal.DEFAULT_ACCOUNT_LABEL])
+
+    def test_an_account_connected_before_labels_is_named_on_the_first_read(self):
+        legacy = self.root / "google-token.json"
+        legacy.write_text(
+            json.dumps(
+                {
+                    "access_token": "token-a",
+                    "refresh_token": "r",
+                    "expires_at": time.time() + 3600,
+                }
+            )
+        )
+        accounts = gcal.Accounts(legacy)
+        self.assertEqual(accounts.labels(), [gcal.DEFAULT_ACCOUNT_LABEL])
+
+        def transport(method, url, headers, body, timeout):
+            if "/calendarList" in url:
+                return 200, json.dumps(
+                    {"items": [{"id": "me@gmail.com", "summary": "me@gmail.com", "primary": True}]}
+                )
+            if "/events" in url:
+                return 200, json.dumps({"items": [self.event("a1", "Dentist", hours=1)]})
+            raise AssertionError(url)
+
+        payload = gcal.section(
+            accounts, today=TODAY, now=NOW, transport=transport, use_cache=False
+        )
+        # Named in place, and persisted: the next brief is not "Connected account"
+        # beside a school address.
+        self.assertEqual(accounts.labels(), ["me@gmail.com"])
+        self.assertEqual(payload["accounts"][0]["account"], "me@gmail.com")
+
+    def test_a_second_account_is_added_beside_the_first(self):
+        self.add("me@gmail.com")
+        self.add("me@school.edu", access="token-b")
+        self.assertEqual(self.accounts.count(), 2)
+        self.assertEqual(self.accounts.labels(), ["me@gmail.com", "me@school.edu"])
+
+    def test_reconnecting_the_same_account_replaces_it(self):
+        self.add("me@gmail.com", access="first")
+        self.add("me@gmail.com", access="second")
+        self.assertEqual(self.accounts.count(), 1)
+        label, store = self.accounts.stores()[0]
+        self.assertEqual(store.load()["access_token"], "second")
+
+    def test_two_unidentified_accounts_get_distinct_labels(self):
+        # The name lookup can fail on a bad connection. Losing the first account to
+        # a generic label would be a worse outcome than an ugly name.
+        first = self.accounts.save(
+            {"access_token": "a", "refresh_token": "ra", "expires_at": time.time() + 60}
+        )
+        second = self.accounts.save(
+            {"access_token": "b", "refresh_token": "rb", "expires_at": time.time() + 60}
+        )
+        self.assertEqual(first, gcal.DEFAULT_ACCOUNT_LABEL)
+        self.assertNotEqual(second, first)
+        self.assertEqual(self.accounts.count(), 2)
+
+    def test_a_third_account_is_refused_at_the_cap(self):
+        self.add("a@x.com")
+        self.add("b@x.com")
+        with self.assertRaises(gcal.CalendarError) as caught:
+            self.add("c@x.com")
+        self.assertEqual(caught.exception.code, "too_many")
+        self.assertIn("DELETE /calendar", str(caught.exception))
+        self.assertEqual(self.accounts.count(), 2)
+
+    def test_the_file_holding_two_accounts_is_private(self):
+        self.add("me@gmail.com")
+        self.add("me@school.edu")
+        self.assertEqual(oct(self.accounts.path.stat().st_mode & 0o777), oct(0o600))
+
+    # -- the brief ----------------------------------------------------------
+
+    def test_events_from_both_accounts_are_labelled_with_their_account(self):
+        self.add("me@gmail.com", access="token-a")
+        self.add("me@school.edu", access="token-b")
+        transport = self.google(
+            {
+                "token-a": [self.event("a1", "Dentist", hours=1)],
+                "token-b": [self.event("b1", "Chemistry lab", hours=2)],
+            }
+        )
+        payload = gcal.section(
+            self.accounts, today=TODAY, now=NOW, transport=transport, use_cache=False
+        )
+
+        self.assertEqual(len(payload["accounts"]), 2)
+        # The panel offers a second connection from this number, and stops once
+        # both slots are used.
+        self.assertEqual(payload["max_accounts"], gcal.MAX_ACCOUNTS)
+        self.assertEqual(
+            [event["title"] for event in payload["events"]], ["Dentist", "Chemistry lab"]
+        )
+        self.assertTrue(payload["lines"][0].endswith(" · me@gmail.com"), payload["lines"])
+        self.assertTrue(payload["lines"][1].endswith(" · me@school.edu"), payload["lines"])
+
+    def test_one_account_is_not_labelled_because_there_is_nothing_to_tell_apart(self):
+        self.add("me@gmail.com", access="token-a")
+        transport = self.google({"token-a": [self.event("a1", "Dentist", hours=1)]})
+        payload = gcal.section(
+            self.accounts, today=TODAY, now=NOW, transport=transport, use_cache=False
+        )
+        self.assertNotIn(" · ", payload["lines"][0])
+
+    def test_a_dead_account_is_forgotten_without_losing_the_other(self):
+        self.accounts.save(
+            {
+                "access_token": "stale",
+                "refresh_token": "refresh-invalid",
+                "expires_at": time.time() - 60,
+            },
+            account="dead@gmail.com",
+        )
+        self.add("me@school.edu", access="token-b")
+        transport = self.google({"token-b": [self.event("b1", "Chemistry lab", hours=2)]})
+
+        payload = gcal.section(
+            self.accounts, today=TODAY, now=NOW, transport=transport, use_cache=False
+        )
+
+        self.assertEqual([event["title"] for event in payload["events"]], ["Chemistry lab"])
+        self.assertTrue(payload.get("accounts_lost"), "a dead account was not reported")
+        self.assertEqual(self.accounts.labels(), ["me@school.edu"], "the live account was dropped too")
+
+    def test_disconnecting_one_account_keeps_the_other(self):
+        self.add("me@gmail.com")
+        self.add("me@school.edu")
+        self.assertTrue(self.accounts.clear("me@gmail.com"))
+        self.assertEqual(self.accounts.labels(), ["me@school.edu"])
+        self.assertFalse(self.accounts.clear("not-here@x.com"))
+        self.assertTrue(self.accounts.clear())
+        self.assertEqual(self.accounts.count(), 0)
+
+
+class TestTwoAccountsThroughTheRoutes(CalendarTestCase):
+    """The connection and disconnection paths, with `Accounts` really installed."""
+
+    def setUp(self):
+        super().setUp()
+        self.configured()
+        server.CALENDAR = gcal.Accounts(self.root / "accounts.json")
+
+    def add(self, address, access="token-a"):
+        server.CALENDAR.save(
+            {
+                "access_token": access,
+                "refresh_token": "refresh-" + address,
+                "expires_at": time.time() + 3600,
+                "scope": gcal.SCOPE,
+            },
+            account=address,
+        )
+
+    def test_the_callback_stores_the_account_under_its_address(self):
+        original_exchange = gcal.exchange_code
+        original_identity = gcal.account_identity
+        gcal.exchange_code = lambda *a, **k: {
+            "access_token": "a",
+            "refresh_token": "r",
+            "expires_at": time.time() + 3600,
+            "scope": gcal.SCOPE,
+        }
+        gcal.account_identity = lambda *a, **k: "me@school.edu"
+        try:
+            stub = HandlerStub("/?code=abc&state=%s" % self.start_flow())
+            status, _, _ = stub.send()
+        finally:
+            gcal.exchange_code = original_exchange
+            gcal.account_identity = original_identity
+
+        self.assertEqual(status, 200)
+        self.assertEqual(server.CALENDAR.labels(), ["me@school.edu"])
+        entry = self.log_events("calendar_connected")[0]
+        self.assertEqual(entry["accounts"], 1)
+
+    def test_connecting_a_second_account_adds_it(self):
+        self.add("me@gmail.com")
+        original_exchange = gcal.exchange_code
+        original_identity = gcal.account_identity
+        gcal.exchange_code = lambda *a, **k: {
+            "access_token": "b",
+            "refresh_token": "r2",
+            "expires_at": time.time() + 3600,
+            "scope": gcal.SCOPE,
+        }
+        gcal.account_identity = lambda *a, **k: "me@school.edu"
+        try:
+            HandlerStub("/?code=abc&state=%s" % self.start_flow()).send()
+        finally:
+            gcal.exchange_code = original_exchange
+            gcal.account_identity = original_identity
+        self.assertEqual(server.CALENDAR.labels(), ["me@gmail.com", "me@school.edu"])
+
+    def test_disconnecting_one_account_leaves_the_other_connected(self):
+        self.add("me@gmail.com")
+        self.add("me@school.edu", access="token-b")
+
+        status, body, _ = HandlerStub(
+            "/calendar?account=me%40school.edu", command="DELETE"
+        ).send()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["removed"])
+        self.assertEqual(server.CALENDAR.labels(), ["me@gmail.com"])
 
 
 class TestDemoModeIsNotTheOperatorsCalendar(CalendarTestCase):

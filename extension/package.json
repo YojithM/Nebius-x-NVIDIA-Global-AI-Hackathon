@@ -6,7 +6,8 @@
   "description": "Cadence — voice-first study assistant (Chrome MV3 side panel)",
   "scripts": {
     "build": "vite build",
-    "watch": "vite build --watch"
+    "watch": "vite build --watch",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "react": "^19.3.1",

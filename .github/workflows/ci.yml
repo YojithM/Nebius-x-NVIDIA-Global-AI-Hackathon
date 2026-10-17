@@ -132,6 +132,12 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
+      # The calendar reminder rule is pure and runs under node:test, without
+      # Chrome or a calendar. It goes before the build: a rule that notifies the
+      # wrong events is a bug the build cannot see.
+      - name: Test the reminder rule
+        run: npm test
+
       - name: Build
         run: npm run build
 

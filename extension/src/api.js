@@ -271,20 +271,6 @@ export function fetchProgress(signal) {
 }
 
 /**
- * The morning brief: what is due, read from the student's own files (Step 8).
- *
- * Composed by the backend in code rather than by a model, so requesting it costs
- * nothing — the reply says so itself, with `cost_usd: 0` and `source: 'code'`.
- *
- * Returns { date, headline, horizon_days, deadlines, nudges, undated,
- * weak_topics, open_quiz, counts, cost_usd, source, generated_at }, where each
- * deadline is { id, text, due, days_left, overdue }.
- */
-export function fetchBrief(signal) {
-  return request('/brief', { signal })
-}
-
-/**
  * What is on the student's Google Calendar (Step 12), read live.
  *
  * Kept off `/brief` on purpose: the brief is composed in code from files on this
