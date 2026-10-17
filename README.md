@@ -432,18 +432,24 @@ same way the deadline lines are — no model call, `cost_usd: 0`.
   fails is reported in the payload rather than silently dropping that calendar's
   week. With more than one calendar in play, each line ends with where it came
   from (`tomorrow — Standup (09:30) · Work`). Still no other Google product.
-- **It notifies, it still cannot write.** The extension's service worker checks
-  the calendar every five minutes and raises a Chrome notification **10 minutes
-  before a timed event**, with the title, time and calendar; clicking it opens the
-  side panel. All-day events are skipped, each event is announced once, and a
-  machine that was asleep wakes up to at most three. A reminder is also the one
-  thing that happens where nothing can watch it, so the worker reports every batch
-  to `POST /reminders` and the **Log** tab shows `reminder_fired · shown 1 ·
-  starts 15:19` — counts and a time, never the event's title — with **Send a test
-  reminder** in that same tab for checking the pop-up path without inventing an
-  event. Both the poll and the report go straight to the local backend, so a build
-  pointed at a deployed backend with `CADENCE_TOKEN` set cannot authenticate from
-  the service worker yet: the banner appears, the log line does not.
+- **It notifies, it still cannot write.** The extension's service worker gives
+  each upcoming event **its own one-off timer, set for exactly ten minutes before
+  it starts**, and raises a Chrome notification at that moment with the title,
+  time and calendar; clicking it opens the side panel. Chrome may deliver a timer
+  a little late when it is busy, and it never fires one early. A five-minute check
+  runs behind the timers, to notice events that were added, moved or deleted, to
+  arm and clear timers accordingly, and to announce an event that was created
+  after its own ten-minute mark had already passed. All-day events are skipped,
+  each occurrence is announced once, and a machine that was asleep wakes up to at
+  most three at once.
+- **A reminder is the one thing that happens where nothing can watch it**, so the
+  worker reports every batch it raises to `POST /reminders` and the **Log** tab
+  shows `reminder_fired · shown 1 · starts 15:19` — counts and a time, never the
+  event's title — with **Send a test reminder** in that same tab for checking the
+  pop-up path without inventing an event. Both the poll and the report go straight
+  to the local backend, so a build pointed at a deployed backend with
+  `CADENCE_TOKEN` set cannot authenticate from the service worker yet: the banner
+  appears, the log line does not.
 - **A read can be up to a minute stale**, deliberately, because the panel asks on
   every open and after every turn.
 - **An app left in *testing* mode forgets you weekly.** Google expires refresh

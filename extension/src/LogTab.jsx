@@ -44,6 +44,8 @@ const EVENT_NOTES = {
   reply_truncated: 'a reply ran out of budget and was asked again, briefly',
   reply_long: 'a reply came back long — complete, so it was left alone',
   spoken_reply_unusable: 'both attempts ran out of budget, so the student was told',
+  session_summarized: 'older turns were folded into the note the panel carries',
+  summarize_failed: 'the note could not be written, so the old one was kept',
 }
 
 // Fields that are interesting in order, with what to call them. Anything not
@@ -73,6 +75,7 @@ const FIELD_LABELS = [
   ['transcript_chars', 'chars said'],
   ['page_text_chars', 'page chars'],
   ['memory_facts', 'facts remembered'],
+  ['history_messages', 'context'],
   ['used', 'used'],
   ['cap', 'cap'],
   ['ok', 'ok'],
@@ -94,6 +97,7 @@ const QUIET = new Set([
   'page_truncated',
   'steps_truncated',
   'previous_reply_chars',
+  'history_chars',
   'memory_prompt_chars',
   'agent_truncated',
   'router_tier',

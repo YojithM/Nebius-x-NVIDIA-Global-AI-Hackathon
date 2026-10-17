@@ -9,7 +9,13 @@ import {
   textToSpeechSupported,
   withoutCitations,
 } from './speech.js'
-import { answerApproval, BackendUnreachableError, checkHealth, sendTurn } from './api.js'
+import {
+  answerApproval,
+  BackendUnreachableError,
+  checkHealth,
+  sendTurn,
+  summarizeSession,
+} from './api.js'
 import LogTab from './LogTab.jsx'
 import MemoryTab from './MemoryTab.jsx'
 import ProgressTab from './ProgressTab.jsx'
@@ -20,6 +26,14 @@ import {
   readPageText,
   utteranceReadsPage,
 } from './pageContext.js'
+import { MIC_BAR_HEIGHTS } from './micLevel.js'
+import { useMicLevel } from './useMicLevel.js'
+import { recentMessages, toMessage } from './conversation.js'
+import {
+  MAX_CONVERSATION_MESSAGES,
+  summarizePlan,
+  trimConversation,
+} from './sessionMemory.js'
 
 const STATUS_TEXT = {
   idle: 'Tap to talk',
@@ -162,11 +176,33 @@ export default function SidePanel() {
   const [micBlocked, setMicBlocked] = useState(false)
   const [micCopied, setMicCopied] = useState(false)
 
+  // The waveform inside the mic, driven by the same microphone the recogniser
+  // is already listening to. `live` is false wherever that second capture is
+  // unavailable or refused, and the button falls back to its rings.
+  const { ref: micMeterRef, live: micLive } = useMicLevel(status === 'listening')
+
   const recognitionRef = useRef(null)
   // The previous reply, needed by "say that more simply". A ref, because
   // runTurn is reached from SpeechRecognition callbacks registered once per
   // recording and must not close over a stale turns array.
   const lastReplyRef = useRef(null)
+  // The conversation as the panel knows it, which is longer than the transcript
+  // on screen: MAX_TURNS_IN_VIEW caps the display, and the messages that leave it
+  // are the ones that get compacted into a note. Refs for the same reason as
+  // everything else here - these are read from speech callbacks during a recording.
+  const conversationRef = useRef([])
+  const summaryRef = useRef('')
+  // How many messages the note already covers. An index into conversationRef, so
+  // trimming that array has to shift it (`trimConversation`).
+  const summarizedRef = useRef(0)
+  const summarizingRef = useRef(false)
+  // Bumped by Clear, so a summary that was in flight for a conversation the
+  // student has since wiped cannot land on the next one.
+  const conversationGenerationRef = useRef(0)
+  // Demo mode, as a ref: the summariser must not fire on the very first turn of a
+  // demo, before the session payload has arrived in state and told us the budget
+  // is a question count rather than a wallet.
+  const demoRef = useRef(false)
   // runTurn is reached from SpeechRecognition event callbacks, which are
   // registered once per recording. Going through a ref keeps those callbacks
   // from closing over a stale version of runTurn.
@@ -241,6 +277,76 @@ export default function SidePanel() {
     [voiceOn],
   )
 
+  /**
+   * Add one message to the panel's own copy of the conversation.
+   *
+   * Separate from `turns` on purpose: `turns` is what fits on screen, this is
+   * what happened. A message that scrolls out of the transcript is still part of
+   * the conversation, and it is from here - not from the rendered array - that
+   * the history and the note are built.
+   */
+  const remember = useCallback((role, text) => {
+    const message = toMessage(role, text)
+    if (!message) return
+    const trimmed = trimConversation(
+      [...conversationRef.current, message],
+      summarizedRef.current,
+      MAX_CONVERSATION_MESSAGES,
+    )
+    conversationRef.current = trimmed.messages
+    summarizedRef.current = trimmed.summarizedThrough
+  }, [])
+
+  /**
+   * Compact what no longer fits into a request, in the background.
+   *
+   * Fire-and-forget by design: the note describes turns the student is finished
+   * with, so it must never delay the answer they are waiting for, and a failure
+   * is invisible - the messages stay in the panel and the next turn tries again.
+   * The only thing that is *not* retried is a failed call in a loop, which is why
+   * the next batch is only kicked off after real progress.
+   */
+  const maybeSummarize = useCallback(() => {
+    // Demo mode's promise is a bounded cost per visitor, spent on questions. A
+    // note is not a question, so the demo simply keeps the last few messages.
+    // (The first turn of a demo can reach here before the session payload has
+    // arrived; `/summarize` refuses in demo mode as well, so the cost stays
+    // bounded either way.)
+    if (demoRef.current) return
+    const generation = conversationGenerationRef.current
+
+    const kick = async () => {
+      if (summarizingRef.current) return
+      const plan = summarizePlan(conversationRef.current, summarizedRef.current)
+      if (!plan) return
+      summarizingRef.current = true
+      let progressed = false
+      try {
+        const data = await summarizeSession({
+          summary: summaryRef.current,
+          messages: plan.messages,
+        })
+        if (
+          generation === conversationGenerationRef.current &&
+          typeof data?.summary === 'string' &&
+          data.summary.trim()
+        ) {
+          summaryRef.current = data.summary
+          summarizedRef.current = plan.through
+          progressed = true
+        }
+      } catch {
+        // Keep the messages and the previous note. The cost of a second attempt
+        // belongs to a later turn, not to a retry loop here.
+      } finally {
+        summarizingRef.current = false
+      }
+      if (progressed && generation === conversationGenerationRef.current) kick()
+    }
+
+    kick()
+  }, [])
+
   const showReply = useCallback((data, extraMeta) => {
     setTurns((prev) =>
       [
@@ -248,6 +354,10 @@ export default function SidePanel() {
         { role: 'cadence', text: data.reply, meta: { ...data, ...(extraMeta || {}) } },
       ].slice(-MAX_TURNS_IN_VIEW),
     )
+    // The panel's own record of the conversation, which is not capped by what
+    // fits on screen. Then, if enough has fallen out of the window, the note.
+    remember('cadence', data.reply)
+    maybeSummarize()
     // Keep the health payload (it carries the backend's mode) - replacing the
     // whole object would blank the badge back to a generic "ok".
     setBackend((prev) => ({ ...prev, state: 'ok' }))
@@ -255,9 +365,17 @@ export default function SidePanel() {
     if (data.spend) setSpend(data.spend)
     if (data.session) setSession(data.session)
     say(data.reply)
-  }, [say])
+  }, [say, remember, maybeSummarize])
 
   const runTurn = useCallback(async (text) => {
+    // Snapshotted before the current utterance is added to the transcript: the
+    // request carries the conversation that led here, and the utterance itself
+    // travels as `transcript`. Reading the ref later would send it twice, because
+    // the render that follows setTurns updates the ref while we await the page.
+    const history = recentMessages(conversationRef.current)
+    // The note of everything older than that window, when the panel has one.
+    const sessionSummary = summaryRef.current
+    remember('you', text)
     setStatus('thinking')
     setError('')
     setNotice('')
@@ -297,6 +415,12 @@ export default function SidePanel() {
         pageUrl: page?.url,
         pageInvoked: asked,
         previousReply: lastReplyRef.current,
+        // The conversation so far, from the panel's own record of it. This is
+        // what makes "yes" after an offer a continuation rather than a fresh,
+        // context-free request - and Clear clears it, because it is the same
+        // conversation the transcript is showing.
+        history,
+        sessionSummary,
       })
       showReply(data, {
         // sent_page_title is ours, not the backend's: it records what the
@@ -363,6 +487,10 @@ export default function SidePanel() {
     const last = [...turns].reverse().find((t) => t.role === 'cadence')
     lastReplyRef.current = last ? last.text : null
   }, [turns])
+
+  useEffect(() => {
+    demoRef.current = Boolean(session?.demo)
+  }, [session])
 
   const startListening = useCallback(() => {
     const recognition = getRecognition()
@@ -794,13 +922,36 @@ export default function SidePanel() {
         <button
           type="button"
           className="mic"
+          ref={micMeterRef}
           onClick={onMicClick}
           aria-pressed={status === 'listening'}
           aria-label="Talk to Cadence"
         >
           <span className="pulse" aria-hidden="true" />
           <span className="pulse pulse-2" aria-hidden="true" />
-          <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true">
+          {/* Nine bars of live spectrum, drawn from the microphone and written
+              as CSS variables by the hook - no re-render per frame. They are
+              hidden until `live`, so a browser without a second capture keeps
+              the glyph instead of showing a dead row. */}
+          <span className="meter" data-live={micLive ? 'on' : 'off'} aria-hidden="true">
+            {MIC_BAR_HEIGHTS.map((height, index) => (
+              <span
+                key={index}
+                className="bar"
+                style={{
+                  '--h': `${height}px`,
+                  '--l': `var(--l${index}, 0)`,
+                }}
+              />
+            ))}
+          </span>
+          <svg
+            className="mic-icon"
+            viewBox="0 0 24 24"
+            width="34"
+            height="34"
+            aria-hidden="true"
+          >
             <path
               d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"
               fill="currentColor"
@@ -868,6 +1019,13 @@ export default function SidePanel() {
               setError('')
               setNotice('')
               setPageArmed(false)
+              // The conversation goes with the transcript. Bumping the
+              // generation first means a note that was already in flight for the
+              // cleared conversation cannot land on the next one.
+              conversationGenerationRef.current += 1
+              conversationRef.current = []
+              summaryRef.current = ''
+              summarizedRef.current = 0
               // Clearing the transcript does not end a quiz: the backend is the
               // one holding it, and the line above comes back on the next turn.
               setStatus('idle')

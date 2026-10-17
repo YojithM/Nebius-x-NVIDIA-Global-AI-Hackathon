@@ -126,7 +126,12 @@ yet` instead of a 0% that would be a lie.
 1. Click the big mic button. Chrome will ask for microphone permission the first
    time — **allow it**.
 2. Say something: *"what's due this week"*. The words appear as you speak
-   (greyed out and italic while provisional).
+   (greyed out and italic while provisional), and the mic becomes a nine-bar
+   waveform that follows your voice. That waveform is read from a second, muted
+   capture of the same microphone — nothing is recorded, stored or sent anywhere,
+   and the stream stops the moment listening does. If the second capture is
+   unavailable or refused, the button keeps its rings and everything else still
+   works: the meter is decoration, never a requirement.
 3. When you stop, the turn goes to the backend and the reply appears and is
    spoken aloud.
 
@@ -196,15 +201,27 @@ screen — otherwise Google reconnects the one you clicked. The link is not in t
 panel once a calendar is connected (nothing is), so open
 `http://127.0.0.1:8787/oauth/google/start` directly for the second one.
 
-**Reminders.** The extension now notifies you **10 minutes before a timed event**,
-with the event's title and its time and calendar, and clicking the notification
-opens the side panel. It checks every five minutes from the service worker rather
-than from the panel, because a reminder that only fires while the panel is open is
-not a reminder. All-day events are skipped (there is no moment to remind you at),
-an event already shown is never shown twice, and a machine that was asleep wakes up
-to at most three at once. Chrome asks for the notification permission when you
-reload the unpacked extension — that is the new `notifications` permission, along
-with `alarms` and `storage`.
+**Reminders.** The extension notifies you **ten minutes before a timed event**, with
+the event's title and its time and calendar, and clicking the notification opens
+the side panel. It runs from the service worker rather than from the panel,
+because a reminder that only fires while the panel is open is not a reminder.
+
+**How the ten minutes are kept.** Two clocks, because "ten minutes before" and
+"every five minutes" are not the same promise:
+
+- each upcoming event gets its **own one-off timer set for exactly its ten-minute
+  mark**, which is what makes the timing a time rather than a range;
+- a **five-minute check** keeps up with the calendar — it notices events that were
+  added, moved or deleted, arms the timers for them, clears the ones for events
+  that are gone, and announces anything already inside its ten-minute window.
+
+An event you add *after* its ten-minute mark has passed is announced as soon as
+it's noticed, because there is no earlier moment to remind you at. All-day events
+are skipped (there is no moment to remind you at), each occurrence is announced
+once, and a machine that was asleep wakes up to at most three at once. Chrome can
+deliver a one-off timer a little late under load; it never fires it early. Chrome
+asks for the notification permission when you reload the unpacked extension —
+that is the new `notifications` permission, along with `alarms` and `storage`.
 
 **You can see that it happened.** A reminder is the only thing in this project
 that runs where nothing is watching — no panel, no request, no tab — so a pop-up
@@ -304,8 +321,26 @@ background reader: closing the panel stops it entirely.
   the one question you asked it for — see the section above. There is no
   standing "always read pages" setting, and no code path that reads a page the
   student did not ask for.
+- **A short conversation, sent with every turn.** Without it, a reply offering
+  *"would you like me to show you how?"* was followed by a "yes" that had nothing
+  to refer to. The panel now posts the last six messages it is showing (three
+  exchanges, each trimmed) along with the question. It is derived from the
+  transcript on screen — pressing **Clear** clears what is sent too — and the
+  backend keeps no session of its own: it uses the messages for that one turn,
+  and its action log records only how many arrived and how long they were, never
+  their text.
+- **And a short note of everything older.** Three exchanges is a small window for
+  a study session, so once a few messages have fallen out of it the backend folds
+  them into a note of at most 120 words (`POST /summarize`). The panel holds that
+  note and sends it back with each turn, exactly as it does with the messages — so
+  the backend still keeps no session, and **Clear** clears the note too. The
+  summariser is told to keep only what the student said, decided and asked, and to
+  invent nothing; the note never reaches the action log, which records its length
+  and no more. Demo mode skips it entirely, because the demo's promise is a
+  bounded cost per visitor.
 - **No microphone or audio state in the service worker.** `background.js` wires
-  the toolbar button to the side panel, runs the five-minute reminder check, and
+  the toolbar button to the side panel, runs the reminder timers and the
+  five-minute check behind them,
   answers the panel when it asks for a test reminder — and holds no conversation
   state at all. MV3 service workers are killed after ~30s idle, so anything kept
   there would vanish mid-sentence. The reminder's own state is one
@@ -334,8 +369,8 @@ background reader: closing the panel stops it entirely.
   up where it was.
 - **No calendar writes.** Nothing in the extension or the backend can create,
   move or delete an event, because the token it holds cannot. The notifications
-  read the same `/calendar` payload the panel asks for, ten minutes before a timed
-  event starts, and write nothing to Google at all. What they do write is two
+  read the same `/calendar` payload the panel asks for, at the ten-minute mark
+  before a timed event starts, and write nothing to Google at all. What they do write is two
   things of ours: a `chrome.storage.local` key holding the occurrences already
   shown, and a `POST /reminders` line saying **how many** went up and **when the
   soonest one starts** — counts and a clock time, never a title.
@@ -350,6 +385,10 @@ background reader: closing the panel stops it entirely.
   on the card in `chrome://extensions` after a rebuild.
 - **`npm run build` must succeed before Chrome will load changes.** Chrome reads
   `dist/`, so an unbuilt edit is invisible.
+- **The session note needs the backend restarted after a code change.** The note
+  is written by `POST /summarize`, so a backend still running an older build
+  answers 404, the panel keeps the messages unsent, and continuity is back to the
+  message window until the process is restarted.
 - **A rebuild is not a reload, and the two halves update separately.** The side
   panel is read from disk every time it opens, but the *service worker* is only
   replaced when you hit Reload on the extension card. So a newly built button can

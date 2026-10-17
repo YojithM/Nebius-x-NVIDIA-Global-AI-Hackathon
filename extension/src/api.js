@@ -78,7 +78,9 @@ async function request(path, options = {}) {
  * The body is the router's input contract, so the names matter:
  *   transcript      the student's words (required, non-empty)
  *   page_title      what they are looking at, when we could read it (optional)
- *   history         earlier turns, for context
+ *   history         the last few messages, for context
+ *   session_summary a note of the conversation older than `history`, written by
+ *                   /summarize and held by the panel - see summarizeSession()
  *   page_text       the page BODY, only when the student invoked a page read
  *   page_invoked    "the student asked for the page this turn" (never sticky)
  *   previous_reply  our own last reply, so "say that more simply" has a referent
@@ -128,10 +130,22 @@ async function request(path, options = {}) {
  *                 own usage numbers rather than an estimate.
  */
 export function sendTurn(
-  { transcript, history = [], pageTitle, pageText, pageUrl, pageInvoked, previousReply },
+  {
+    transcript,
+    history = [],
+    sessionSummary,
+    pageTitle,
+    pageText,
+    pageUrl,
+    pageInvoked,
+    previousReply,
+  },
   signal,
 ) {
   const body = { transcript, history }
+  // Omitted when there is none: a turn with no note is a turn that has not
+  // outgrown its message window yet, and the backend treats absence as empty.
+  if (sessionSummary) body.session_summary = String(sessionSummary).slice(0, 1200)
   // Omitted rather than sent as null/"" — the backend treats a missing title as
   // "no page context", and an empty string as a string it has to accept anyway.
   if (pageTitle) body.page_title = pageTitle
@@ -152,6 +166,27 @@ export function sendTurn(
 
 export function checkHealth(signal) {
   return request('/health', { signal })
+}
+
+/**
+ * Fold a few messages that have fallen out of the window into the running note.
+ *
+ * Its own endpoint rather than a field on `/turn`: this describes turns the
+ * student is already finished with, so it can happen after the answer arrives,
+ * on its own time, and a slow or failed note never delays a reply. The note is
+ * held by the panel and sent back with every turn, so the backend still keeps no
+ * session - and a failure changes nothing, because the messages stay in the
+ * panel and are tried again next turn. -> { summary, messages, cost_usd, ... }
+ */
+export function summarizeSession({ summary, messages }, signal) {
+  const body = { messages }
+  if (summary) body.summary = String(summary).slice(0, 1200)
+  return request('/summarize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
 }
 
 /**

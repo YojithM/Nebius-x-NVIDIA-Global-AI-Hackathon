@@ -123,6 +123,7 @@ Rules:
 9. When a sentence uses something you got from a search result, cite the page: put its number in square brackets right after that sentence, like [1]. Cite only numbers that appear in a SOURCES list - never a number you made up, and never the URL itself, because a link the student cannot trace is worse than no link. If nothing you were handed supports a sentence, leave it uncited.
 10. Saving how you did something as a skill is a job for propose_skill, not for prose: when the student asks you to save, write, create or add a skill, call it with the whole file. It writes nothing - it checks the file and hands it to the student, who reads it and decides - so never tell them a skill has been saved, or that you will remember this for next time, when no file has been written.
 11. A question about the student's own schedule - their calendar, their next event, what is coming up, whether they are busy - is a job for read_calendar. Call it before answering, and never say you cannot see their calendar. This rule exists because it was broken: the first version had no calendar tool, and "what is my upcoming event" was answered with "I'm not able to view your Google Calendar". If the tool returns no events, say the window is empty rather than guessing.
+12. Earlier messages may be the conversation before this request. Answer the LAST message only; use the earlier ones to understand what a short follow-up like "yes", "do that" or "the second one" refers to. Never re-answer a question that has already been answered, and never ask again what the previous message already asked.
 """
 
 _RETRY = (
@@ -380,12 +381,20 @@ def _trim_tool_results(messages):
     return messages
 
 
-def agent_reply(prompt, ask, *, tier, log=None, max_steps=DEFAULT_MAX_STEPS, run=run_tool):
+def agent_reply(
+    prompt, ask, *, tier, log=None, max_steps=DEFAULT_MAX_STEPS, run=run_tool, history=()
+):
     """Run the loop. -> dict(reply, steps, tools, usage, truncated, notes, latency_ms).
 
     `ask` is the server's `ask_model` (tier, messages, log=...) -> (text, response,
     latency), passed in rather than imported so the loop can be tested without a
     network and without patching the server's client.
+
+    `history` is the recent conversation as `{role, text}` entries, oldest first.
+    It is inserted as ordinary messages before the current request, which is what
+    lets "yes" after an offer mean something: the offer is in the prompt, not in a
+    separate summary the model has to be told to trust. The current request stays
+    last, so it remains the thing being answered.
 
     The reply is never empty: the last call goes through the same empty-reply retry
     the rest of the app uses, and the caller falls back the same way it always has.
@@ -399,8 +408,20 @@ def agent_reply(prompt, ask, *, tier, log=None, max_steps=DEFAULT_MAX_STEPS, run
     # The persona is prepended rather than repeated inside the protocol prompt: the
     # tone has to be identical whether a skill or the loop answered, and one copy of
     # it is one place to change.
+    # Validated once more here rather than trusted from the caller: this function
+    # is called directly by tests and could be wired elsewhere later, and a
+    # malformed entry would otherwise reach the model as an unlabelled role.
+    prior = [
+        {"role": item["role"], "content": item["text"]}
+        for item in (history or ())
+        if isinstance(item, dict)
+        and item.get("role") in ("user", "assistant")
+        and isinstance(item.get("text"), str)
+        and item["text"].strip()
+    ]
     messages = [
         {"role": "system", "content": system_prompt()},
+        *prior,
         {"role": "user", "content": prompt},
     ]
     # The last step is held back for the wrap-up call, so the ceiling is exact.

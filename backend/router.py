@@ -64,7 +64,11 @@ Rules:
 
 A "memory" field may be present: things this student asked you to remember. Use it to resolve what they mean ("when is it?" after a midterm was mentioned), but it is NOT a reason to pick a skill. If they ask you to remember something NEW, that is the remember skill.
 
-A "context" field on a skill card lists extra material that skill can work from: "page" (the text of the page they are looking at), "previous" (your own last reply), "memory". You are never shown page text, so never say you read the page. When the input includes "page_read", the student asked us to read the page for this request, so prefer a skill that declares "page" over one that does not."""
+A "context" field on a skill card lists extra material that skill can work from: "page" (the text of the page they are looking at), "previous" (your own last reply), "memory". You are never shown page text, so never say you read the page. When the input includes "page_read", the student asked us to read the page for this request, so prefer a skill that declares "page" over one that does not.
+
+A "conversation" field may also be present: the last few messages, oldest first. Use it only to understand what a short follow-up refers to - "yes", "no", "do that", "the second one", "tell me more" - and route it to whatever the previous message was about. When the assistant asked a question and the student answered it, the answer belongs to that question, not to a fresh request. The newest transcript is still the request being routed; the conversation is only its referent.
+
+A "session_summary" field may be present: a compact note of the earlier conversation, written before the messages above. Use it to resolve what a topic or a pronoun refers to, and never as a reason to pick a skill. When it disagrees with the newest transcript, the transcript is right."""
 
 
 @dataclass
@@ -107,6 +111,8 @@ def build_user_message(
     registry: SkillRegistry,
     memory: str = "",
     page_read: bool = False,
+    history=(),
+    summary: str = "",
 ) -> str:
     """The router's input: the utterance, the page, the library, and what we know.
 
@@ -129,6 +135,21 @@ def build_user_message(
         payload["memory"] = memory
     if page_read:
         payload["page_read"] = True
+    # Only the last few, and only as much of each as a referent needs. This is
+    # the router - it should recognise that "yes" answers the previous message,
+    # not read the conversation for content; the skill that runs gets the rest.
+    if history:
+        payload["conversation"] = [
+            {"role": item["role"], "text": item["text"][:240]}
+            for item in list(history)[-4:]
+            if isinstance(item, dict)
+            and item.get("role") in ("user", "assistant")
+            and isinstance(item.get("text"), str)
+        ]
+    # The note of earlier turns, on the same budget principle: the router needs
+    # enough to know what "that" refers to, not the whole session.
+    if summary:
+        payload["session_summary"] = summary[:600]
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -272,6 +293,8 @@ def route(
     page_title: Optional[str] = None,
     memory: str = "",
     page_read: bool = False,
+    history=(),
+    summary: str = "",
 ) -> Decision:
     """Route one utterance. Always returns a Decision - never raises for bad JSON."""
     tier_cfg = config["tiers"][ROUTER_TIER]
@@ -280,7 +303,7 @@ def route(
         {
             "role": "user",
             "content": build_user_message(
-                transcript, page_title, registry, memory, page_read
+                transcript, page_title, registry, memory, page_read, history, summary
             ),
         },
     ]

@@ -15,10 +15,14 @@ import test from 'node:test'
 
 
 import {
+  ARM_LIMIT,
   MAX_PER_CHECK,
   LEAD_MINUTES,
+  REMINDER_ALARM,
   TEST_REMINDER_MESSAGE,
+  armPlan,
   dueReminders,
+  reminderFor,
 } from '../public/background.js'
 // The panel's half of the same message. Plain ESM, so node imports it directly,
 // which is the only way to test the error path that a real browser produced.
@@ -76,6 +80,56 @@ test('all-day events are skipped: there is no moment to remind you at', () => {
 test('an event already shown is not shown again', () => {
   const already = { 'e1|2026-10-17|10:10': NOW - 60_000 }
   assert.equal(dueReminders(payload([event()]), NOW, already).length, 0)
+  // Both halves have to agree, or the poll notifies and the alarm does it again a
+  // few minutes later: one occurrence, one reminder, whichever path gets there.
+  assert.deepEqual(armPlan(payload([event()]), NOW, already), [])
+  assert.equal(reminderFor(payload([event()]), 'e1|2026-10-17|10:10', NOW, already), null)
+})
+
+// ------------------------------------------------------------ the two clocks --
+//
+// "Ten minutes before" and "every five minutes" are different promises, and this
+// is the difference: a five-minute poll can only ever land *somewhere* inside the
+// ten minutes. So every event gets its own one-shot alarm for exactly its mark,
+// and the poll's job is discovery and catching up.
+
+/** When the worker should arm the alarm for an event at `day`/`time`. */
+function tenBefore({ day, time }) {
+  return new Date(`${day}T${time}:00`).getTime() - LEAD_MINUTES * 60 * 1000
+}
+
+const armedReminders = (calls) =>
+  calls.alarms.filter((alarm) => String(alarm.name).startsWith(REMINDER_ALARM))
+
+test('the fire rule re-checks the event but not the lead, so a hair early still fires', () => {
+  // The fixture starts at 10:10 and NOW is 10:00, so its ten-minute mark is
+  // exactly NOW. A clock an instant fast is the case this rule exists for: the
+  // poll would say "not yet" and the reminder would be lost for good.
+  const early = NOW - 1
+  assert.equal(dueReminders(payload([event()]), early).length, 0)
+  assert.equal(
+    reminderFor(payload([event()]), 'e1|2026-10-17|10:10', early).title,
+    'Thermodynamics lecture',
+  )
+})
+
+test('the plan is the soonest ten-minute marks, and no more than it can hold', () => {
+  const many = []
+  for (let index = 0; index < 80; index += 1) {
+    const start = new Date(Date.now() + (index + 1) * 6 * 60 * 60 * 1000)
+    many.push(event({ id: `e${index}`, ...localParts(start), end_time: null }))
+  }
+  const plan = armPlan(payload(many), Date.now())
+  const expected = many
+    .map((item) => tenBefore(item))
+    .sort((a, b) => a - b)
+    .slice(0, ARM_LIMIT)
+  assert.equal(plan.length, ARM_LIMIT)
+  assert.deepEqual(
+    plan.map((entry) => entry.when),
+    expected,
+    'a cap that keeps the wrong events is worse than no cap',
+  )
 })
 
 test('a weekly event\'s next occurrence is a new reminder', () => {
@@ -139,8 +193,20 @@ function localParts(date) {
   }
 }
 
-async function loadWorker(payload, notified = {}, { notificationFails = false } = {}) {
-  const calls = { created: [], stored: null, alarm: null, listeners: {}, requests: [] }
+async function loadWorker(
+  payload,
+  notified = {},
+  { notificationFails = false, armed = [] } = {},
+) {
+  const calls = {
+    created: [],
+    stored: null,
+    alarm: null,
+    alarms: [],
+    cleared: [],
+    listeners: {},
+    requests: [],
+  }
   globalThis.chrome = {
     runtime: {
       onInstalled: { addListener: (fn) => (calls.listeners.install = fn) },
@@ -149,7 +215,19 @@ async function loadWorker(payload, notified = {}, { notificationFails = false } 
       lastError: null,
     },
     alarms: {
-      create: (name, info) => (calls.alarm = { name, ...info }),
+      create: (name, info) => {
+        calls.alarm = { name, ...info }
+        calls.alarms.push({ name, ...info })
+        return Promise.resolve()
+      },
+      // What Chrome already has armed. The worker reads this to leave an alarm
+      // alone when nothing about its event changed, and to clear the ones whose
+      // events are gone. `armed` is what a test wants it to find waiting.
+      getAll: async () => armed,
+      clear: async (name) => {
+        calls.cleared.push(name)
+        return true
+      },
       onAlarm: { addListener: (fn) => (calls.listeners.alarm = fn) },
     },
     notifications: {
@@ -238,6 +316,103 @@ test('every other alarm is ignored', async () => {
     calls.listeners.alarm({ name: 'something-else' })
     await settle()
     assert.equal(calls.created.length, 0)
+  } finally {
+    unloadWorker()
+  }
+})
+
+test('an event hours away is armed for exactly ten minutes before it starts', async () => {
+  const soon = localParts(new Date(Date.now() + 3 * 60 * 60 * 1000))
+  const calls = await loadWorker(payload([event({ ...soon, end_time: null })]))
+  try {
+    calls.listeners.alarm({ name: 'calendar-check' })
+    await settle()
+    assert.equal(calls.created.length, 0, 'nothing is due three hours out')
+    const armed = armedReminders(calls)
+    assert.equal(armed.length, 1)
+    assert.equal(armed[0].name, `${REMINDER_ALARM}e1|${soon.day}|${soon.time}`)
+    assert.equal(
+      armed[0].when,
+      tenBefore(soon),
+      'the alarm belongs at the ten-minute mark, not at the next poll',
+    )
+    assert.equal(
+      armed[0].periodInMinutes,
+      undefined,
+      'one shot for one event: a repeating alarm here would be the old design again',
+    )
+  } finally {
+    unloadWorker()
+  }
+})
+
+test('an event already inside its window is notified instead of armed', async () => {
+  const soon = localParts(new Date(Date.now() + 5 * 60 * 1000))
+  const calls = await loadWorker(payload([event({ ...soon, end_time: null })]))
+  try {
+    calls.listeners.alarm({ name: 'calendar-check' })
+    await settle()
+    assert.equal(calls.created.length, 1, 'its ten-minute mark has gone by, so it is due now')
+    assert.equal(armedReminders(calls).length, 0, 'there is no earlier moment to arm for')
+  } finally {
+    unloadWorker()
+  }
+})
+
+test('the armed alarm fires the reminder itself, once, with the event title', async () => {
+  const soon = localParts(new Date(Date.now() + 10 * 60 * 1000))
+  const calls = await loadWorker(payload([event({ ...soon, end_time: null })]))
+  try {
+    calls.listeners.alarm({ name: `${REMINDER_ALARM}e1|${soon.day}|${soon.time}` })
+    await settle()
+    assert.equal(calls.created.length, 1)
+    assert.equal(calls.created[0].title, 'Thermodynamics lecture')
+    assert.match(calls.created[0].message, /\d\d:\d\d · Work · me@school\.edu/)
+    assert.ok(
+      calls.stored?.calendarNotified?.[`e1|${soon.day}|${soon.time}`],
+      'unrecorded, the next poll would notify the same event again',
+    )
+    assert.equal(reportOf(calls).shown, 1)
+  } finally {
+    unloadWorker()
+  }
+})
+
+test('an alarm whose event moved or already started says nothing', async () => {
+  const started = localParts(new Date(Date.now() - 60 * 1000))
+  const calls = await loadWorker(payload([event({ ...started })]))
+  try {
+    calls.listeners.alarm({ name: `${REMINDER_ALARM}e1|1999-01-01|09:00` })
+    await settle()
+    assert.equal(calls.created.length, 0, 'that occurrence is not on the calendar any more')
+    assert.equal(calls.stored, null, 'and nothing was recorded for it')
+
+    calls.listeners.alarm({ name: `${REMINDER_ALARM}e1|${started.day}|${started.time}` })
+    await settle()
+    assert.equal(calls.created.length, 0, 'too late to be a reminder')
+  } finally {
+    unloadWorker()
+  }
+})
+
+test('a stale alarm is cleared and an unchanged one is left alone', async () => {
+  const soon = localParts(new Date(Date.now() + 2 * 60 * 60 * 1000))
+  const key = `e1|${soon.day}|${soon.time}`
+  const armed = [
+    { name: `${REMINDER_ALARM}${key}`, scheduledTime: tenBefore(soon) },
+    { name: `${REMINDER_ALARM}gone|2099-01-01|09:00`, scheduledTime: Date.now() + 60 * 60 * 1000 },
+    { name: 'calendar-check', scheduledTime: Date.now() + 60 * 1000 },
+  ]
+  const calls = await loadWorker(payload([event({ ...soon, end_time: null })]), {}, { armed })
+  try {
+    calls.listeners.alarm({ name: 'calendar-check' })
+    await settle()
+    assert.deepEqual(
+      calls.cleared,
+      [`${REMINDER_ALARM}gone|2099-01-01|09:00`],
+      'a deleted event should not leave its alarm behind, and the poll is not ours to clear',
+    )
+    assert.equal(armedReminders(calls).length, 0, 'the alarm that was already right was rewritten')
   } finally {
     unloadWorker()
   }

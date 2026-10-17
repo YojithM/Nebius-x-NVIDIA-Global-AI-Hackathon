@@ -1,23 +1,47 @@
+/* The palette is two-toned on purpose: one violet for the things you press,
+   one teal for the things the app is doing on its own (thinking, listening,
+   live). A single accent made every state look the same, which is how a
+   button and a status end up competing. */
 :root {
-  --bg: #12121a;
-  --surface: #1b1b26;
-  --surface-2: #23232f;
-  --text: #ececf3;
-  --muted: #9a9ab0;
-  --accent: #7d7df5;
-  --accent-strong: #5b5bd6;
-  --danger: #ff8080;
-  --ok: #6ee7a8;
+  --bg: #0b0b14;
+  --surface: #15151f;
+  --surface-2: #1e1e2c;
+  --line: #2a2a3c;
+  --text: #eeedf7;
+  --muted: #9a98b4;
+  --accent: #8b7cff;
+  --accent-strong: #6350f0;
+  --accent-2: #35d0c0;
+  --warm: #ffb86b;
+  --danger: #ff8a8a;
+  --ok: #63e6a4;
   --radius: 14px;
+  --radius-sm: 10px;
+  --ease: cubic-bezier(0.22, 0.9, 0.3, 1);
+  --shadow: inset 0 1px 0 color-mix(in srgb, #fff 6%, transparent),
+    0 14px 30px -22px #000;
+  --glow: 0 12px 32px -12px color-mix(in srgb, var(--accent-strong) 70%, transparent);
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f7f7fb;
+    --bg: #f5f4fb;
     --surface: #ffffff;
-    --surface-2: #eeeef6;
-    --text: #1a1a24;
-    --muted: #66667d;
+    --surface-2: #ecebf7;
+    --line: #e2e0f0;
+    --text: #191827;
+    --muted: #63617c;
+    /* Darker than the dark-mode values on purpose: the same hues that read well
+       on ink are too pale on white, and a status colour nobody can read is
+       decoration. Each of these clears 4.5:1 against --bg. */
+    --accent: #5a49e8;
+    --accent-strong: #4635c9;
+    --accent-2: #0b7d72;
+    --warm: #a85f12;
+    --danger: #b33434;
+    --ok: #0e7a52;
+    --shadow: inset 0 1px 0 #fff, 0 12px 26px -22px #2a2450;
+    --glow: 0 12px 28px -14px color-mix(in srgb, var(--accent-strong) 55%, transparent);
   }
 }
 
@@ -32,11 +56,23 @@ body,
   margin: 0;
 }
 
+/* Two soft lights behind the panel - violet top-left, teal top-right - so the
+   dark background has depth instead of being one flat rectangle. Fixed so it
+   does not slide away as the transcript scrolls. */
 body {
-  background: var(--bg);
+  background:
+    radial-gradient(760px 420px at 6% -12%, color-mix(in srgb, var(--accent) 26%, transparent), transparent 62%),
+    radial-gradient(640px 360px at 106% 4%, color-mix(in srgb, var(--accent-2) 16%, transparent), transparent 66%),
+    var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--text);
 }
 
 .panel {
@@ -58,15 +94,18 @@ body {
 
 .tabs {
   display: flex;
-  gap: 4px;
+  gap: 3px;
   padding: 3px;
+  border: 1px solid var(--line);
   border-radius: 999px;
-  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
 }
 
 .tab {
   flex: 1;
-  padding: 6px 0;
+  padding: 7px 0;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -74,12 +113,33 @@ body {
   font: inherit;
   font-size: 12.5px;
   cursor: pointer;
+  transition: color 0.18s var(--ease), background 0.18s var(--ease),
+    transform 0.12s var(--ease);
 }
 
+.tab:hover:not(.tab-on) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.tab:active {
+  transform: scale(0.96);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Switching tabs is a change of place, so the destination tab arrives rather
+   than merely turning violet. */
 .tab-on {
-  background: var(--accent);
+  background: linear-gradient(140deg, var(--accent), var(--accent-strong));
   color: #fff;
   font-weight: 600;
+  box-shadow: 0 8px 18px -10px var(--accent-strong),
+    inset 0 1px 0 color-mix(in srgb, #fff 30%, transparent);
+  animation: tab-in 0.26s var(--ease);
 }
 
 /* ---------- memory ---------- */
@@ -124,10 +184,20 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 8px 10px;
-  border-radius: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   background: var(--surface);
+  box-shadow: var(--shadow);
   font-size: 13px;
+  transition: border-color 0.18s var(--ease), transform 0.18s var(--ease),
+    box-shadow 0.18s var(--ease);
+}
+
+.memory-topic li:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
+  box-shadow: var(--shadow), 0 10px 22px -20px var(--accent-strong);
 }
 
 .memory-topic .fact {
@@ -149,22 +219,47 @@ body {
   line-height: 1;
   cursor: pointer;
   padding: 0 2px;
+  border-radius: 50%;
+  transition: color 0.16s var(--ease), transform 0.16s var(--ease),
+    background 0.16s var(--ease);
 }
 
 .forget:hover:not(:disabled) {
   color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  transform: scale(1.15);
 }
 
 .retry {
   align-self: center;
-  padding: 6px 14px;
+  padding: 7px 15px;
   border: 0;
   border-radius: 999px;
-  background: var(--accent);
+  background: linear-gradient(140deg, var(--accent), var(--accent-strong));
   color: #fff;
   font: inherit;
   font-size: 12.5px;
+  font-weight: 600;
   cursor: pointer;
+  box-shadow: 0 10px 22px -14px var(--accent-strong),
+    inset 0 1px 0 color-mix(in srgb, #fff 28%, transparent);
+  transition: transform 0.14s var(--ease), box-shadow 0.18s var(--ease),
+    filter 0.18s var(--ease);
+}
+
+.retry:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.07);
+  box-shadow: 0 14px 26px -14px var(--accent-strong);
+}
+
+.retry:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+}
+
+.retry:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .memory-foot {
@@ -214,10 +309,16 @@ body {
 }
 
 .quiz-active {
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: var(--surface);
+  padding: 11px 13px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
   border-left: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    150deg,
+    color-mix(in srgb, var(--accent) 10%, var(--surface)),
+    var(--surface)
+  );
+  box-shadow: var(--shadow);
 }
 
 .quiz-active p {
@@ -240,10 +341,18 @@ body {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 8px 10px;
-  border-radius: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   background: var(--surface);
+  box-shadow: var(--shadow);
   font-size: 12.5px;
+  transition: border-color 0.18s var(--ease), transform 0.18s var(--ease);
+}
+
+.weak-topics li:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent-2) 38%, var(--line));
 }
 
 .weak-topics .topic {
@@ -254,6 +363,7 @@ body {
 .weak-topics .accuracy {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+  color: var(--accent-2);
 }
 
 .weak-topics .evidence,
@@ -280,17 +390,26 @@ body {
 }
 
 .declared-weak li {
-  padding: 8px 10px;
-  border-radius: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   background: var(--surface);
+  box-shadow: var(--shadow);
   font-size: 12.5px;
 }
 
 .quiz {
   position: relative;
-  padding: 10px 12px;
-  border-radius: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   background: var(--surface);
+  box-shadow: var(--shadow);
+  transition: border-color 0.18s var(--ease);
+}
+
+.quiz:hover {
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--line));
 }
 
 .quiz .status {
@@ -427,39 +546,95 @@ body {
 
 .panel-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
 
+/* The wordmark. A gradient orb stands where a logo would, and the name itself is
+   filled with the two accents so the header carries the palette rather than
+   floating above it. */
 .panel-header h1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0;
-  font-size: 19px;
-  letter-spacing: -0.01em;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  background: linear-gradient(100deg, var(--text) 6%, var(--accent) 62%, var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.panel-header h1::before {
+  content: '';
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: linear-gradient(150deg, var(--accent), var(--accent-2));
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent),
+    0 0 18px color-mix(in srgb, var(--accent) 80%, transparent);
 }
 
 .subtitle {
-  margin: 2px 0 0;
+  margin: 3px 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11.5px;
+  letter-spacing: 0.01em;
 }
 
 .backend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   flex: none;
-  padding: 4px 9px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
   border-radius: 999px;
-  font-size: 11px;
-  background: var(--surface-2);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
   color: var(--muted);
   white-space: nowrap;
+}
+
+/* The dot is the state, not the word beside it: green and breathing when the
+   backend answers, red when it does not. */
+.backend::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
 }
 
 .backend-ok {
   color: var(--ok);
 }
 
+.backend-ok::before {
+  animation: live 2.6s ease-in-out infinite;
+}
+
+.backend:not(.backend-ok):not(.backend-down)::before {
+  animation: live 1.2s ease-in-out infinite;
+}
+
 .backend-down {
   color: var(--danger);
+}
+
+/* The two backend states that matter get a lit edge, so the answer to "is it
+   up?" is readable without reading the label. */
+.backend-ok,
+.backend-down {
+  border-color: color-mix(in srgb, currentColor 35%, var(--line));
+  background: color-mix(in srgb, currentColor 10%, transparent);
 }
 
 /* ---------- transcript ---------- */
@@ -469,27 +644,68 @@ body {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding-right: 2px;
+  gap: 12px;
+  padding: 2px 4px 2px 1px;
 }
 
 .empty {
   color: var(--muted);
   font-size: 13.5px;
+  line-height: 1.6;
   margin: auto 0;
   text-align: center;
-  padding: 0 12px;
+  padding: 0 14px;
 }
 
+/* Cards rather than slabs: a hairline edge and a faint top highlight are what
+   make a dark surface look lifted instead of painted on. */
 .turn {
+  position: relative;
+  border: 1px solid var(--line);
   background: var(--surface);
   border-radius: var(--radius);
-  padding: 10px 12px;
-  animation: rise 0.18s ease-out;
+  padding: 11px 13px;
+  box-shadow: var(--shadow);
+  transition: border-color 0.2s var(--ease), transform 0.2s var(--ease),
+    box-shadow 0.2s var(--ease);
+  animation: rise 0.3s var(--ease) both;
+}
+
+.turn:hover {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  box-shadow: var(--shadow), var(--glow);
+}
+
+/* Cadence's replies lean left with a lit spine; yours lean right in a tinted
+   card. The two are readable at a glance without reading the labels. */
+.turn-cadence {
+  margin-right: 16px;
+  background: linear-gradient(
+    150deg,
+    color-mix(in srgb, var(--accent) 9%, var(--surface)),
+    var(--surface) 62%
+  );
+}
+
+.turn-cadence::before {
+  content: '';
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: -1px;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(var(--accent), var(--accent-2));
 }
 
 .turn-you {
-  background: var(--surface-2);
+  margin-left: 16px;
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--line));
+  background: linear-gradient(
+    150deg,
+    color-mix(in srgb, var(--accent) 22%, var(--surface)),
+    var(--surface-2)
+  );
 }
 
 /* While you're still speaking the text is provisional, so it looks provisional. */
@@ -499,8 +715,12 @@ body {
 }
 
 .turn p {
-  margin: 3px 0 0;
+  margin: 4px 0 0;
   white-space: pre-wrap;
+}
+
+.turn-cadence .who {
+  color: var(--accent);
 }
 
 /* ---------- citations (Step 11) ---------- */
@@ -632,7 +852,41 @@ body {
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(8px) scale(0.99);
+  }
+}
+
+@keyframes tab-in {
+  from {
+    transform: scale(0.96);
+  }
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+}
+
+/* A slow brightness wave for the "live" dot on the backend pill. */
+@keyframes live {
+  50% {
+    opacity: 0.35;
+    box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 8%, transparent);
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
   }
 }
 
@@ -641,10 +895,12 @@ body {
 .error {
   margin: 0;
   padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   border-radius: 10px;
   background: color-mix(in srgb, var(--danger) 14%, transparent);
   color: var(--danger);
   font-size: 12.5px;
+  animation: rise 0.24s var(--ease);
 }
 
 /* ---------- mic ---------- */
@@ -653,31 +909,42 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding-top: 4px;
+  gap: 9px;
+  padding-top: 6px;
 }
 
+/* A lit sphere rather than a flat circle: a highlight at the top-left, a violet
+   body, and a shadow underneath. Idle it breathes, slowly, so the one control on
+   the screen looks alive before you touch it. */
 .mic {
   position: relative;
-  width: 116px;
-  height: 116px;
+  width: 112px;
+  height: 112px;
   border: none;
   border-radius: 50%;
-  background: linear-gradient(160deg, var(--accent), var(--accent-strong));
+  background:
+    radial-gradient(120% 120% at 28% 16%, color-mix(in srgb, #fff 55%, transparent), transparent 52%),
+    linear-gradient(150deg, var(--accent), var(--accent-strong) 72%, #4b3bd6);
   color: white;
   cursor: pointer;
   display: grid;
   place-items: center;
-  box-shadow: 0 10px 30px -10px var(--accent-strong);
-  transition: transform 0.12s ease;
+  isolation: isolate;
+  box-shadow:
+    0 18px 40px -18px var(--accent-strong),
+    inset 0 1px 0 color-mix(in srgb, #fff 40%, transparent),
+    inset 0 -10px 22px color-mix(in srgb, #000 20%, transparent);
+  animation: mic-idle 4.5s ease-in-out infinite;
+  transition: transform 0.18s var(--ease), filter 0.2s var(--ease);
 }
 
 .mic:hover {
-  transform: scale(1.03);
+  transform: scale(1.04);
+  filter: saturate(1.1) brightness(1.03);
 }
 
 .mic:active {
-  transform: scale(0.97);
+  transform: scale(0.96);
 }
 
 .mic:focus-visible {
@@ -685,12 +952,12 @@ body {
   outline-offset: 4px;
 }
 
-/* Expanding rings — only while actually listening. */
+/* Expanding rings - only while actually listening. */
 .pulse {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  border: 2px solid var(--accent);
+  border: 2px solid color-mix(in srgb, var(--accent-2) 75%, var(--accent));
   opacity: 0;
 }
 
@@ -700,6 +967,54 @@ body {
 
 .status-listening .pulse-2 {
   animation-delay: 0.9s;
+}
+
+/* The live waveform, inside the orb.
+
+   The mic glyph steps aside while the student talks and nine bars take its
+   place, each scaled by its own frequency band. The levels arrive as CSS
+   variables written 25 times a second, so nothing here re-renders React while
+   someone is speaking; when the capture is unavailable the meter stays hidden
+   and the glyph stays put, which is why `live` is a class rather than a
+   fallback animation. */
+.mic-icon {
+  transition: opacity 0.16s var(--ease), transform 0.16s var(--ease);
+}
+
+.meter {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  /* The overall level, not a band: the row itself breathes outward on a loud
+     syllable while each bar keeps its own shape. One transform on the group is
+     cheaper than nine shadows changing every frame. */
+  transform: scale(calc(1 + var(--level, 0) * 0.06));
+  transition: opacity 0.16s var(--ease);
+}
+
+.meter[data-live='on'] {
+  opacity: 1;
+}
+
+.meter .bar {
+  width: 4px;
+  height: var(--h, 40px);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.68));
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.38);
+  transform: scaleY(calc(0.1 + var(--l, 0) * 0.9));
+  transform-origin: center;
+  will-change: transform;
+}
+
+.meter[data-live='on'] ~ .mic-icon {
+  opacity: 0;
+  transform: scale(0.7);
 }
 
 @keyframes pulse {
@@ -713,34 +1028,77 @@ body {
   }
 }
 
-/* Breathing while a turn is in flight. */
+@keyframes mic-idle {
+  0%,
+  100% {
+    box-shadow:
+      0 18px 40px -18px var(--accent-strong),
+      inset 0 1px 0 color-mix(in srgb, #fff 40%, transparent),
+      inset 0 -10px 22px color-mix(in srgb, #000 20%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 18px 44px -14px var(--accent),
+      0 0 0 6px color-mix(in srgb, var(--accent) 10%, transparent),
+      inset 0 1px 0 color-mix(in srgb, #fff 46%, transparent),
+      inset 0 -10px 22px color-mix(in srgb, #000 20%, transparent);
+  }
+}
+
+/* Breathing while a turn is in flight, with a teal arc sweeping the rim: the
+   colour moves to the sound of "working", and the arc shows it is progressing
+   rather than stalled. */
 .status-thinking .mic {
-  animation: breathe 1.4s ease-in-out infinite;
+  background:
+    radial-gradient(120% 120% at 28% 16%, color-mix(in srgb, #fff 50%, transparent), transparent 52%),
+    linear-gradient(150deg, var(--accent-2), #1f8f9a 70%, var(--accent-strong));
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+.status-thinking .mic::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0 68%,
+    color-mix(in srgb, var(--accent-2) 90%, #fff) 88%,
+    transparent 100%
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000
+        calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  animation: spin 1.15s linear infinite;
 }
 
 @keyframes breathe {
   50% {
-    transform: scale(0.94);
-    filter: brightness(1.15);
+    transform: scale(0.95);
+    filter: brightness(1.12);
   }
 }
 
 .status-speaking .mic {
+  background:
+    radial-gradient(120% 120% at 28% 16%, color-mix(in srgb, #fff 50%, transparent), transparent 52%),
+    linear-gradient(150deg, var(--accent-2), var(--accent) 74%, var(--accent-strong));
   animation: talk 0.7s ease-in-out infinite alternate;
 }
 
 @keyframes talk {
   from {
-    box-shadow: 0 10px 30px -10px var(--accent-strong);
+    box-shadow: 0 18px 40px -18px var(--accent-strong);
   }
   to {
-    box-shadow: 0 0 0 12px color-mix(in srgb, var(--accent) 22%, transparent);
+    box-shadow: 0 0 0 12px color-mix(in srgb, var(--accent-2) 20%, transparent);
   }
 }
 
 .status-text {
   margin: 0;
   font-size: 12.5px;
+  letter-spacing: 0.01em;
   color: var(--muted);
 }
 
@@ -754,17 +1112,41 @@ body {
 
 .secondary {
   display: flex;
-  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
 }
 
+/* Quiet pills that come forward on hover - a lift, a violet edge, and a faint
+   glow. Nothing here is the primary action (the mic is), so none of them is
+   filled by default. */
 .secondary button {
-  background: var(--surface-2);
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
   color: var(--text);
-  border: none;
-  border-radius: 9px;
-  padding: 6px 12px;
-  font-size: 12px;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 11.5px;
   cursor: pointer;
+  transition: transform 0.14s var(--ease), border-color 0.18s var(--ease),
+    background 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+
+.secondary button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  box-shadow: 0 8px 18px -14px var(--accent-strong);
+}
+
+.secondary button:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+}
+
+.secondary button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .secondary button:disabled {
@@ -788,23 +1170,26 @@ body {
 .typed input {
   flex: 1;
   min-width: 0;
-  padding: 9px 12px;
-  border: 1px solid var(--surface-2);
-  border-radius: 10px;
-  background: var(--surface);
+  padding: 10px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
   color: var(--text);
   font: inherit;
   font-size: 12.5px;
+  transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
 }
 
 .typed input::placeholder {
   color: var(--muted);
 }
 
+/* Focus is a ring of light around the box, not a hard outline: this is where
+   the student is about to type, so it is the brightest edge on the screen. */
 .typed input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .typed input:disabled {
@@ -813,15 +1198,34 @@ body {
 
 .typed button {
   flex: 0 0 auto;
-  padding: 9px 14px;
+  padding: 10px 16px;
   border: none;
-  border-radius: 10px;
-  background: var(--accent);
+  border-radius: 12px;
+  background: linear-gradient(140deg, var(--accent), var(--accent-strong));
   color: #fff;
   font: inherit;
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
+  box-shadow: 0 10px 22px -14px var(--accent-strong),
+    inset 0 1px 0 color-mix(in srgb, #fff 28%, transparent);
+  transition: transform 0.14s var(--ease), box-shadow 0.18s var(--ease),
+    filter 0.18s var(--ease);
+}
+
+.typed button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.07);
+  box-shadow: 0 14px 26px -14px var(--accent-strong);
+}
+
+.typed button:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+}
+
+.typed button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .typed button:disabled {
@@ -832,8 +1236,16 @@ body {
 /* The page-read arm. Armed is a *state*, not a hover, and it has to be visible
    from across the room — it means the next question sends the page's text. */
 .arm.arm-on {
-  background: var(--accent);
+  border-color: transparent;
+  background: linear-gradient(140deg, var(--accent), var(--accent-strong));
   color: #fff;
+  animation: arm-in 0.25s var(--ease);
+}
+
+@keyframes arm-in {
+  from {
+    transform: scale(0.94);
+  }
 }
 
 .armed {
@@ -850,10 +1262,13 @@ body {
 .notice {
   margin: 0;
   padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-left: 2px solid color-mix(in srgb, var(--accent-2) 60%, var(--line));
   border-radius: 10px;
   background: var(--surface-2);
   color: var(--muted);
   font-size: 12.5px;
+  animation: rise 0.24s var(--ease);
 }
 
 /* ---------- a blocked microphone ---------- */
@@ -899,7 +1314,7 @@ body {
 
 .mic-actions button {
   padding: 7px 12px;
-  border: 1px solid var(--surface-2);
+  border: 1px solid var(--line);
   border-radius: 9px;
   background: var(--surface);
   color: var(--text);
@@ -907,11 +1322,15 @@ body {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  transition: transform 0.14s var(--ease), border-color 0.16s var(--ease),
+    color 0.16s var(--ease), background 0.16s var(--ease);
 }
 
 .mic-actions button:hover {
   border-color: var(--accent);
   color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  transform: translateY(-1px);
 }
 
 .mic-steps {
@@ -1021,8 +1440,9 @@ body {
   flex-direction: column;
   align-items: flex-start;
   gap: 7px;
-  padding: 9px 10px;
-  border-radius: 9px;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
 }
 
@@ -1044,11 +1464,19 @@ body {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 4px 8px;
-  padding: 7px 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, var(--line));
   border-radius: 9px;
   background: var(--surface-2);
   font-size: 11px;
   line-height: 1.4;
+  transition: border-color 0.16s var(--ease), background 0.16s var(--ease);
+}
+
+.log-lines li:hover {
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-2));
+  border-left-color: var(--accent);
 }
 
 .log-ts {
@@ -1071,11 +1499,111 @@ body {
   opacity: 0.85;
 }
 
+/* ---------- finish ---------- */
+
+/* The panel fades up once on open, and each tab arrives rather than snapping
+   into place - the same 5px of travel in both, so switching tabs feels like
+   turning a page instead of redrawing a screen. */
+.panel {
+  animation: panel-in 0.32s var(--ease) both;
+}
+
+.memory,
+.progress,
+.log {
+  animation: fade-up 0.28s var(--ease) both;
+}
+
+/* Links get an underline that grows from the left rather than a hard toggle. */
+.sources a,
+.turn p .cite,
+.calendar-offer .connect {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 0 1px;
+  transition: background-size 0.2s var(--ease), color 0.16s var(--ease);
+  text-decoration: none;
+}
+
+.sources a:hover,
+.turn p .cite:hover,
+.calendar-offer .connect:hover {
+  background-size: 100% 1px;
+  text-decoration: none;
+}
+
+/* A thin, dim scrollbar: the transcript is the one thing that scrolls, and a
+   bright system bar beside a dark panel looks borrowed from another app. */
+.transcript,
+.memory,
+.progress,
+.log {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+.transcript::-webkit-scrollbar,
+.memory::-webkit-scrollbar,
+.progress::-webkit-scrollbar,
+.log::-webkit-scrollbar {
+  width: 6px;
+}
+
+.transcript::-webkit-scrollbar-thumb,
+.memory::-webkit-scrollbar-thumb,
+.progress::-webkit-scrollbar-thumb,
+.log::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.transcript::-webkit-scrollbar-thumb:hover,
+.memory::-webkit-scrollbar-thumb:hover,
+.progress::-webkit-scrollbar-thumb:hover,
+.log::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--accent) 50%, var(--line));
+}
+
 @media (prefers-reduced-motion: reduce) {
   .status-listening .pulse,
   .status-thinking .mic,
+  .status-thinking .mic::after,
   .status-speaking .mic,
-  .turn {
+  .mic,
+  .turn,
+  .tab-on,
+  .arm.arm-on,
+  .panel,
+  .memory,
+  .progress,
+  .log,
+  .error,
+  .notice,
+  .backend::before {
     animation: none;
+  }
+
+  .turn:hover,
+  .memory-topic li:hover,
+  .weak-topics li:hover,
+  .secondary button:hover:not(:disabled),
+  .typed button:hover:not(:disabled),
+  .retry:hover:not(:disabled),
+  .mic:hover {
+    transform: none;
+  }
+
+  /* The bars still track the voice - that is information, not decoration - but
+     nothing eases or fades around them. */
+  .meter,
+  .mic-icon {
+    transition: none;
+  }
+
+  .sources a,
+  .turn p .cite,
+  .calendar-offer .connect {
+    transition: none;
   }
 }
