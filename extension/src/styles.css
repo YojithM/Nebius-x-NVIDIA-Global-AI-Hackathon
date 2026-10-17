@@ -1013,6 +1013,23 @@ body {
   color: var(--muted);
 }
 
+/* The one control in this tab. Boxed off from the list because it is the only
+   thing here that does something rather than reports something, and because the
+   line it writes appears immediately below it. */
+.log-test {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+
+.log-test .retry {
+  align-self: flex-start;
+}
+
 .log-lines {
   list-style: none;
   margin: 0;

@@ -14,7 +14,15 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 
-import { MAX_PER_CHECK, LEAD_MINUTES, dueReminders } from '../public/background.js'
+import {
+  MAX_PER_CHECK,
+  LEAD_MINUTES,
+  TEST_REMINDER_MESSAGE,
+  dueReminders,
+} from '../public/background.js'
+// The panel's half of the same message. Plain ESM, so node imports it directly,
+// which is the only way to test the error path that a real browser produced.
+import { sendTestReminder, testReminderSupported } from '../src/reminders.js'
 
 // Local time on purpose: `day`/`time` from the backend are local, and so is
 // `new Date('2026-10-17T10:00:00')`. Both sides of the comparison move together
@@ -131,12 +139,13 @@ function localParts(date) {
   }
 }
 
-async function loadWorker(payload, notified = {}) {
-  const calls = { created: [], stored: null, alarm: null, listeners: {} }
+async function loadWorker(payload, notified = {}, { notificationFails = false } = {}) {
+  const calls = { created: [], stored: null, alarm: null, listeners: {}, requests: [] }
   globalThis.chrome = {
     runtime: {
       onInstalled: { addListener: (fn) => (calls.listeners.install = fn) },
       onStartup: { addListener: (fn) => (calls.listeners.startup = fn) },
+      onMessage: { addListener: (fn) => (calls.listeners.message = fn) },
       lastError: null,
     },
     alarms: {
@@ -145,6 +154,9 @@ async function loadWorker(payload, notified = {}) {
     },
     notifications: {
       create: async (id, options) => {
+        // Chrome rejects the call when the student has revoked the permission,
+        // which is the failure the counter in the report has to survive.
+        if (notificationFails) throw new Error('notifications are blocked')
         calls.created.push({ id, ...options })
         return id
       },
@@ -160,9 +172,22 @@ async function loadWorker(payload, notified = {}) {
     sidePanel: { setPanelBehavior: async () => {}, open: async () => {} },
     windows: { getLastFocused: () => {} },
   }
-  globalThis.fetch = async () => ({ ok: true, json: async () => payload })
+  // Recorded rather than ignored: the report to `/reminders` is the whole point
+  // of the log line, so the tests read the request the worker actually made.
+  globalThis.fetch = async (url, options = {}) => {
+    calls.requests.push({ url: String(url), options })
+    return { ok: true, json: async () => payload }
+  }
   await import(`../public/background.js?wiring=${Date.now()}${Math.random()}`)
   return calls
+}
+
+/** The body of the report the worker sent to the backend, parsed. */
+function reportOf(calls) {
+  const request = calls.requests.find((entry) => entry.url.endsWith('/reminders'))
+  assert.ok(request, 'nothing was reported to the backend about the reminder')
+  assert.equal(request.options.method, 'POST')
+  return JSON.parse(request.options.body)
 }
 
 function unloadWorker() {
@@ -215,6 +240,154 @@ test('every other alarm is ignored', async () => {
     assert.equal(calls.created.length, 0)
   } finally {
     unloadWorker()
+  }
+})
+
+test('a fired reminder is reported so the backend can log it', async () => {
+  const soon = localParts(new Date(Date.now() + 5 * 60 * 1000))
+  const calls = await loadWorker(payload([event({ ...soon, end_time: null })]))
+  try {
+    calls.listeners.alarm({ name: 'calendar-check' })
+    await settle()
+    const report = reportOf(calls)
+    assert.equal(report.shown, 1)
+    assert.equal(report.failed, 0)
+    assert.equal(report.soonest, soon.time, 'the log needs the event time, not its title')
+    assert.equal(report.manual, false)
+    // The one rule the action log has: this was the student's own calendar, and
+    // its title stays in the browser.
+    assert.equal('title' in report, false)
+  } finally {
+    unloadWorker()
+  }
+})
+
+test('a refused notification is reported as failed and is not retried', async () => {
+  const soon = localParts(new Date(Date.now() + 5 * 60 * 1000))
+  const calls = await loadWorker(
+    payload([event({ ...soon })]),
+    {},
+    { notificationFails: true },
+  )
+  try {
+    calls.listeners.alarm({ name: 'calendar-check' })
+    await settle()
+    const report = reportOf(calls)
+    assert.equal(report.shown, 0)
+    assert.equal(report.failed, 1)
+    assert.ok(
+      calls.stored?.calendarNotified?.[`e1|${soon.day}|${soon.time}`],
+      'a refused notification would otherwise be retried every five minutes',
+    )
+  } finally {
+    unloadWorker()
+  }
+})
+
+test('the panel can ask for a test reminder and is told what happened', async () => {
+  const calls = await loadWorker(payload([]))
+  try {
+    const answer = await new Promise((resolve) => {
+      const held = calls.listeners.message({ type: TEST_REMINDER_MESSAGE }, {}, resolve)
+      assert.equal(held, true, 'the channel has to stay open for the async answer')
+    })
+    assert.deepEqual(answer, { ok: true, reason: '', logged: true })
+    assert.equal(calls.created.length, 1)
+    assert.match(calls.created[0].id, /^cadence-test:/, 'a second press needs a new id')
+    assert.equal(calls.created[0].title, 'Cadence')
+    const report = reportOf(calls)
+    assert.equal(report.manual, true)
+    assert.equal(report.shown, 1)
+  } finally {
+    unloadWorker()
+  }
+})
+
+test('a test reminder Chrome refuses says so instead of claiming success', async () => {
+  const calls = await loadWorker(payload([]), {}, { notificationFails: true })
+  try {
+    const answer = await new Promise((resolve) => {
+      calls.listeners.message({ type: TEST_REMINDER_MESSAGE }, {}, resolve)
+    })
+    assert.equal(answer.ok, false)
+    assert.match(answer.reason, /blocked/)
+    assert.equal(reportOf(calls).failed, 1)
+  } finally {
+    unloadWorker()
+  }
+})
+
+test('a message the worker does not know gets no answer at all', async () => {
+  const calls = await loadWorker(payload([]))
+  try {
+    assert.equal(calls.listeners.message({ type: 'something-else' }, {}, () => {}), false)
+    assert.equal(calls.listeners.message(undefined, {}, () => {}), false)
+    await settle()
+    assert.equal(calls.created.length, 0)
+  } finally {
+    unloadWorker()
+  }
+})
+
+test('the panel and the worker agree on the message name', () => {
+  // The name cannot be imported across that boundary - `public/` is copied
+  // verbatim and `src/` is bundled - so it is asserted instead. A rename on one
+  // side that misses the other would leave a button that silently does nothing.
+  const panel = readFileSync(new URL('../src/reminders.js', import.meta.url), 'utf8')
+  assert.ok(
+    panel.includes(`'${TEST_REMINDER_MESSAGE}'`),
+    'src/reminders.js and public/background.js disagree about the message name',
+  )
+})
+
+// ------------------------------------------------- the panel's error path --
+//
+// Caught in the browser, not here: a service worker still running the previous
+// build answers nothing, and Chrome's wording for that says nothing about why.
+
+test('a worker that never answers is explained rather than repeated', async () => {
+  globalThis.chrome = {
+    runtime: {
+      lastError: null,
+      sendMessage: (message, respond) => {
+        // What Chrome does when no listener exists: lastError is set and the
+        // callback fires with nothing in it.
+        globalThis.chrome.runtime.lastError = {
+          message: 'Could not establish connection. Receiving end does not exist.',
+        }
+        respond(undefined)
+      },
+    },
+  }
+  try {
+    await assert.rejects(
+      sendTestReminder(),
+      /reload the extension at chrome:\/\/extensions/,
+    )
+  } finally {
+    delete globalThis.chrome
+  }
+})
+
+test('a delivered reminder resolves with what the worker said', async () => {
+  globalThis.chrome = {
+    runtime: { lastError: null, sendMessage: (message, respond) => respond({ ok: true, logged: true }) },
+  }
+  try {
+    assert.deepEqual(await sendTestReminder(), { ok: true, logged: true })
+  } finally {
+    delete globalThis.chrome
+  }
+})
+
+test('the button is hidden where there is no worker to ask', () => {
+  delete globalThis.chrome
+  assert.equal(testReminderSupported(), false)
+  globalThis.chrome = { runtime: { sendMessage: () => {} } }
+  try {
+    assert.equal(testReminderSupported(), true)
+  } finally {
+    delete globalThis.chrome
   }
 })
 

@@ -436,9 +436,14 @@ same way the deadline lines are — no model call, `cost_usd: 0`.
   the calendar every five minutes and raises a Chrome notification **10 minutes
   before a timed event**, with the title, time and calendar; clicking it opens the
   side panel. All-day events are skipped, each event is announced once, and a
-  machine that was asleep wakes up to at most three. The reminders poll the local
-  backend directly, so a build pointed at a deployed backend with `CADENCE_TOKEN`
-  set cannot send them yet.
+  machine that was asleep wakes up to at most three. A reminder is also the one
+  thing that happens where nothing can watch it, so the worker reports every batch
+  to `POST /reminders` and the **Log** tab shows `reminder_fired · shown 1 ·
+  starts 15:19` — counts and a time, never the event's title — with **Send a test
+  reminder** in that same tab for checking the pop-up path without inventing an
+  event. Both the poll and the report go straight to the local backend, so a build
+  pointed at a deployed backend with `CADENCE_TOKEN` set cannot authenticate from
+  the service worker yet: the banner appears, the log line does not.
 - **A read can be up to a minute stale**, deliberately, because the panel asks on
   every open and after every turn.
 - **An app left in *testing* mode forgets you weekly.** Google expires refresh

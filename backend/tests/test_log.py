@@ -22,6 +22,15 @@ Three properties, each a way a log viewer goes wrong:
    write site; this is the test that reads it back, because the endpoint is what
    makes it a promise worth keeping - anyone reviewing a deploy can now read the
    whole thing.
+
+It also tests the newest door into the same log: `POST /reminders`, where the
+browser tells the backend that a calendar reminder went up. That route exists
+because a reminder is the one thing here that happens where nothing can be
+watched - a `chrome.alarms` tick, in a service worker, with the panel closed - so
+the report is what turns "did it fire?" from a question only the student's eyes
+can answer into a line anyone can read. The two promises are tested from the
+outside, exactly as the log view would see them: the line is there, and the event
+title is not.
 """
 
 import email.message
@@ -189,6 +198,149 @@ class TestTheLogRoute(unittest.TestCase):
         self.write(line("brief"))
         _, payload, _ = HandlerStub().send()
         self.assertEqual(payload["path"], str(server.LOG_PATH))
+
+
+class ReportStub(server.Handler):
+    """A `POST /reminders` call, with no socket underneath it.
+
+    The body is encoded the way the worker's `fetch` sends it - JSON, with a
+    Content-Length - because the route reads both.
+    """
+
+    def __init__(self, body=None, path="/reminders", authorization=None):
+        self.command = "POST"
+        self.path = path
+        self.request_version = "HTTP/1.0"
+        self.requestline = f"POST {path} HTTP/1.0"
+        raw = json.dumps(body).encode("utf-8") if body is not None else b""
+        self.rfile = io.BytesIO(raw)
+        self.wfile = io.BytesIO()
+        lines = [f"Content-Length: {len(raw)}", "Content-Type: application/json"]
+        if authorization is not None:
+            lines.append(f"Authorization: {authorization}")
+        self.headers = email.message_from_string("\r\n".join(lines) + "\r\n\r\n")
+        self.client_address = ("127.0.0.1", 0)
+        self.server = None
+
+    def log_message(self, *args):
+        pass
+
+    def send(self):
+        self.do_POST()
+        text = self.wfile.getvalue().decode("utf-8")
+        head, _, body = text.partition("\r\n\r\n")
+        return int(head.split(" ")[1]), (json.loads(body) if body.strip() else None), text
+
+    def logged(self, limit=5):
+        """What the Log tab would show - the same tail reader, not a second one."""
+        return server.log_tail(limit=limit)[0]
+
+
+class TestTheReminderReport(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self._log_path = server.LOG_PATH
+        self._token = server.AUTH_TOKEN
+        self._demo = server.DEMO_MODE
+        self._stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        server.LOG_PATH = self.root / "action-log.jsonl"
+        server.AUTH_TOKEN = ""
+        server.DEMO_MODE = False
+
+    def tearDown(self):
+        server.LOG_PATH = self._log_path
+        server.AUTH_TOKEN = self._token
+        server.DEMO_MODE = self._demo
+        sys.stdout = self._stdout
+        self.tmp.cleanup()
+
+    def test_a_report_becomes_a_line_the_log_tab_can_read(self):
+        status, payload, _ = ReportStub(
+            {"shown": 2, "failed": 0, "soonest": "15:19", "manual": False}
+        ).send()
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+
+        entries = ReportStub().logged()
+        self.assertEqual(entries[0]["event"], "reminder_fired")
+        self.assertEqual(entries[0]["shown"], 2)
+        self.assertEqual(entries[0]["failed"], 0)
+        self.assertEqual(entries[0]["soonest_start"], "15:19")
+        self.assertEqual(entries[0]["manual"], False)
+
+    def test_the_event_title_cannot_reach_the_log(self):
+        """The rule the log has kept since it existed, at its newest door."""
+        secret = "Therapy appointment"
+        status, payload, raw = ReportStub(
+            {"shown": 1, "failed": 0, "soonest": "09:05", "title": secret}
+        ).send()
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["shown"], 1)
+        # Neither refused nor written: it is simply not a field this route knows.
+        self.assertNotIn(secret, server.LOG_PATH.read_text(encoding="utf-8"))
+        self.assertNotIn(secret, raw)
+
+    def test_a_time_is_normalised_and_a_fake_one_is_refused(self):
+        ReportStub({"shown": 1, "soonest": "9:05"}).send()
+        self.assertEqual(ReportStub().logged(1)[0]["soonest_start"], "09:05")
+
+        for soonest in ("99:99", "25:00", "15:60", "noon", "1530"):
+            with self.subTest(soonest=soonest):
+                status, payload, _ = ReportStub({"shown": 1, "soonest": soonest}).send()
+                self.assertEqual(status, 400)
+                self.assertIn("soonest", payload["error"])
+
+        # Absent is not malformed: a hand-sent test reminder has no event behind
+        # it and must still be loggable.
+        status, payload, _ = ReportStub({"shown": 1, "manual": True}).send()
+        self.assertEqual(status, 200)
+        self.assertIsNone(payload["soonest_start"])
+
+    def test_a_report_that_claims_nothing_is_refused(self):
+        status, payload, _ = ReportStub({"shown": 0, "failed": 0}).send()
+        self.assertEqual(status, 400)
+        self.assertIn("at least one", payload["error"])
+        self.assertEqual(ReportStub().logged(), [])
+
+    def test_a_boolean_is_not_a_count(self):
+        """`isinstance(True, int)` is true in Python, so `true` has to be refused."""
+        status, payload, _ = ReportStub({"shown": True}).send()
+        self.assertEqual(status, 400)
+        self.assertIn("shown", payload["error"])
+
+        status, payload, _ = ReportStub({"shown": 200}).send()
+        self.assertEqual(status, 400)
+        self.assertIn("between 0 and", payload["error"])
+
+        status, payload, _ = ReportStub({"shown": 1, "manual": "yes"}).send()
+        self.assertEqual(status, 400)
+        self.assertIn("manual", payload["error"])
+
+    def test_the_route_is_gated_by_the_token(self):
+        server.AUTH_TOKEN = "a" * 64
+        status, payload, _ = ReportStub({"shown": 1}).send()
+        self.assertEqual(status, 401)
+        self.assertIn("bearer token", payload["error"])
+        # The refusal is logged - that is what `unauthorized` is for - and the
+        # reminder is not: a request that never reached the route writes nothing
+        # about a notification that was never reported.
+        self.assertEqual(
+            [entry["event"] for entry in ReportStub().logged()], ["unauthorized"]
+        )
+
+        status, _, _ = ReportStub(
+            {"shown": 1}, authorization=f"Bearer {'a' * 64}"
+        ).send()
+        self.assertEqual(status, 200)
+
+    def test_the_demo_refuses_and_writes_nothing(self):
+        server.DEMO_MODE = True
+        status, payload, _ = ReportStub({"shown": 1}).send()
+        self.assertEqual(status, 400)
+        self.assertIn("demo", payload["error"])
+        self.assertEqual(ReportStub().logged(), [])
 
 
 class TestTheLogKeepsItsPromises(unittest.TestCase):

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchLog } from './api.js'
+import { sendTestReminder, testReminderSupported } from './reminders.js'
 
 /**
  * The Log tab (Step 10): what the backend just did, newest first.
@@ -22,6 +23,7 @@ import { fetchLog } from './api.js'
 // that shows something new.
 const EVENT_NOTES = {
   turn: 'one request answered',
+  reminder_fired: 'the service worker put a reminder on screen',
   morning_brief: 'the day’s brief, logged on its own at the configured hour',
   brief_failed: 'the scheduled brief could not be composed',
   tool_call: 'the plan used a tool',
@@ -56,6 +58,10 @@ const FIELD_LABELS = [
   ['router_attempts', 'router tries'],
   ['latency_ms', 'ms'],
   ['steps', 'steps'],
+  ['shown', 'shown'],
+  ['failed', 'failed'],
+  ['soonest_start', 'starts'],
+  ['manual', 'manual'],
   ['tool_names', 'tools'],
   ['tool_failures', 'failed'],
   ['citations', 'cited'],
@@ -131,6 +137,8 @@ export default function LogTab() {
   const [state, setState] = useState({ status: 'loading' })
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testNote, setTestNote] = useState('')
 
   const load = useCallback(async () => {
     setBusy(true)
@@ -143,6 +151,48 @@ export default function LogTab() {
       setBusy(false)
     }
   }, [])
+
+  /**
+   * Ask the service worker for a reminder right now.
+   *
+   * The reminder is the one thing in this project the panel cannot produce
+   * itself, and the one thing that normally happens with nobody watching. So the
+   * button puts its two halves within reach of each other: press it, and either a
+   * banner appears or the reason it did not arrives in the sentence underneath -
+   * which is the difference between a feature that is broken and one that merely
+   * had nothing to say.
+   */
+  async function onTestReminder() {
+    setTesting(true)
+    setTestNote('')
+    try {
+      const result = await sendTestReminder()
+      if (!result.ok) {
+        setTestNote(
+          `Chrome refused to raise it: ${result.reason || 'no reason given'}`,
+        )
+      } else if (result.logged) {
+        // "Accepted" rather than "shown": Chrome resolving the call is not the
+        // same fact as a banner being drawn, and macOS can silence the second
+        // one without touching the first. Measured, not assumed - five clicks
+        // were accepted here while the screen stayed empty.
+        setTestNote(
+          'Chrome accepted it — its line is in the list below. No banner? macOS ' +
+            'is silencing Chrome: check Focus, then System Settings → Notifications.',
+        )
+        await load()
+      } else {
+        setTestNote(
+          'Sent, but the backend did not record it. A token-protected backend ' +
+            'refuses the service worker for now, so the banner is the only proof.',
+        )
+      }
+    } catch (err) {
+      setTestNote(`The reminder could not be sent: ${err.message}`)
+    } finally {
+      setTesting(false)
+    }
+  }
 
   useEffect(() => {
     load()
@@ -168,6 +218,7 @@ export default function LogTab() {
   }
 
   const { entries = [], count = 0, note = '', path = '', max_lines: maxLines = 0 } = state.data
+  const canTestReminders = testReminderSupported()
 
   return (
     <main className="log">
@@ -182,6 +233,26 @@ export default function LogTab() {
         Counts and events only — never the text of a page, a deadline, or anything
         you said. Newest first, up to {maxLines} lines.
       </p>
+
+      {canTestReminders && (
+        <section className="log-test">
+          <p className="hint">
+            A reminder fires in the service worker, where no tab can see it — and a
+            notification that failed to draw looks exactly like a rule that never
+            matched. Ask for one now and it lands in this list either way.
+          </p>
+          <button
+            type="button"
+            className="retry"
+            disabled={testing}
+            onClick={onTestReminder}
+          >
+            {testing ? 'Sending…' : 'Send a test reminder'}
+          </button>
+        </section>
+      )}
+
+      {testNote && <p className="hint">{testNote}</p>}
 
       {note && <p className="hint">{note}</p>}
 

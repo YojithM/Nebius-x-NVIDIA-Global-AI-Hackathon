@@ -206,9 +206,27 @@ to at most three at once. Chrome asks for the notification permission when you
 reload the unpacked extension — that is the new `notifications` permission, along
 with `alarms` and `storage`.
 
-**One limit worth saying**: the reminders poll `127.0.0.1:8787` directly. A build
-pointed at a deployed backend with `CADENCE_TOKEN` set cannot authenticate from the
-service worker yet, so reminders are local-only for now.
+**You can see that it happened.** A reminder is the only thing in this project
+that runs where nothing is watching — no panel, no request, no tab — so a pop-up
+that failed to draw used to look exactly like a rule that never matched, for
+everyone, including us. The worker now reports each batch to `POST /reminders`, and
+the line lands in the **Log** tab: `reminder_fired · shown 1 · starts 15:19`.
+
+Two things are deliberately missing from that line: the event's **title** and
+which calendar it came from. The log has never held your words and a calendar
+title is one of them, so what it keeps instead is the timing, which is the part
+only the log knows.
+
+The same tab has **Send a test reminder**, which asks the worker for one now — the
+same call the alarm makes, so a green test means the real path can draw. Use it to
+check the pop-up without inventing a calendar event: press it, and either a banner
+appears or the sentence underneath says why not.
+
+**One limit worth saying**: the reminders poll `127.0.0.1:8787` directly, and so
+does that report. A build pointed at a deployed backend with `CADENCE_TOKEN` set
+cannot authenticate from the service worker yet, so reminders are local-only for
+now — and on such a backend the banner still appears while the log line does not,
+which the test button says out loud rather than hiding.
 
 If the consent screen answers *access_denied*, the usual cause is an OAuth app in
 *testing* mode that does not list your Google account under **Test users**.
@@ -286,10 +304,13 @@ background reader: closing the panel stops it entirely.
   the one question you asked it for — see the section above. There is no
   standing "always read pages" setting, and no code path that reads a page the
   student did not ask for.
-- **No microphone or audio state in the service worker.** `background.js` does
-  one thing: wire the toolbar button to the side panel. MV3 service workers are
-  killed after ~30s idle, so any conversation state kept there would vanish
-  mid-sentence.
+- **No microphone or audio state in the service worker.** `background.js` wires
+  the toolbar button to the side panel, runs the five-minute reminder check, and
+  answers the panel when it asks for a test reminder — and holds no conversation
+  state at all. MV3 service workers are killed after ~30s idle, so anything kept
+  there would vanish mid-sentence. The reminder's own state is one
+  `chrome.storage.local` key of the occurrences already shown, which is the whole
+  reason that check can live there.
 - **The confirmation loop exists, and no shipped skill needs it.** A skill that
   declares `requires_confirmation`, or a general request the router flags, is
   answered with *"Shall I…?"* and two buttons — **Yes, go ahead** and **No** — under
@@ -313,9 +334,11 @@ background reader: closing the panel stops it entirely.
   up where it was.
 - **No calendar writes.** Nothing in the extension or the backend can create,
   move or delete an event, because the token it holds cannot. The notifications
-  are one-way: they read the same `/calendar` payload the panel asks for, ten
-  minutes before a timed event starts, and write nothing anywhere but a
-  `chrome.storage.local` key holding the ids already shown.
+  read the same `/calendar` payload the panel asks for, ten minutes before a timed
+  event starts, and write nothing to Google at all. What they do write is two
+  things of ours: a `chrome.storage.local` key holding the occurrences already
+  shown, and a `POST /reminders` line saying **how many** went up and **when the
+  soonest one starts** — counts and a clock time, never a title.
 - **No memory editing in the UI.** You can delete a note from the Memory tab, but
   adding or rewriting one means asking the assistant or editing the file. The
   file editing is the point, so this may stay that way.
@@ -327,6 +350,13 @@ background reader: closing the panel stops it entirely.
   on the card in `chrome://extensions` after a rebuild.
 - **`npm run build` must succeed before Chrome will load changes.** Chrome reads
   `dist/`, so an unbuilt edit is invisible.
+- **A rebuild is not a reload, and the two halves update separately.** The side
+  panel is read from disk every time it opens, but the *service worker* is only
+  replaced when you hit Reload on the extension card. So a newly built button can
+  appear next to a worker still running the previous build — which is exactly what
+  **Send a test reminder** hits, and the tab now says so in words instead of
+  repeating Chrome's *“Receiving end does not exist.”* The version on the card is
+  the other way to tell: if it has not gone up, the worker is old.
 - **Speech recognition needs a network connection.** Chrome's Web Speech API
   streams to Google's speech service; it is not an offline API. That is also why
   the mic can't be tested in a headless browser — the automated tests stub the

@@ -147,6 +147,13 @@ LOG_PATH = BACKEND_DIR / "logs" / "action-log.jsonl"
 LOG_TAIL_LINES = 200
 LOG_TAIL_BYTES = 256 * 1024
 
+# How many notifications one report from the extension may claim to have shown.
+# The worker caps itself at three per check (`MAX_PER_CHECK` in
+# extension/public/background.js), so this is a sanity ceiling rather than a
+# second limit doing real work: a report of two hundred is a bug or a stranger,
+# and neither belongs in the log.
+REMINDER_REPORT_MAX = 20
+
 # ------------------------------------------------------- the calendar (12) --
 # Read-only Google Calendar. Two process-wide objects and no thread: events are
 # read when the brief is requested, never polled in the background, so a quiet
@@ -1890,6 +1897,35 @@ def brief_loop(stop, interval=60.0):
         )
 
 
+# ------------------------------------------------- reminders, at the edge ----
+#
+# The reminder is raised in the browser, on an alarm, with no panel open and
+# nothing asking the backend for anything - which makes it the one feature here
+# whose work leaves no trace anywhere. `POST /reminders` is how the worker reports
+# what it put on screen, and it is what lets the Log tab answer the question the
+# panel otherwise cannot: did a reminder actually fire, and was it early enough?
+
+
+def reminder_time(value):
+    """'HH:MM' -> the same time, normalised; None when it is not a real one.
+
+    `9:05` and `09:05` are both accepted, `99:99` is not: a log line that can read
+    `99:99` is one nobody can trust the rest of. Anything else is None rather than
+    an exception, because the caller has to tell two different cases apart - an
+    absent `soonest` is normal (a manual test has no event behind it), while a
+    malformed one is a client bug worth refusing.
+    """
+    if not isinstance(value, str):
+        return None
+    match = re.match(r"^\s*(\d{1,2}):(\d{2})\s*$", value)
+    if not match:
+        return None
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "CadenceBackend/0.3"
 
@@ -2272,6 +2308,102 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._send_audio(200, audio, meta)
 
+    def _reminder_report(self):
+        """POST /reminders: what the extension just put on screen. -> a receipt.
+
+        A reminder is the only thing this project does that the backend cannot
+        see. It runs on a `chrome.alarms` tick, in a service worker, with the
+        panel closed - so "did it fire?" has had exactly one witness, the
+        student's own eyes, and a notification that fails to draw looks
+        identical to a rule that never matched. The worker reports each batch
+        here for that reason and not to keep a record for its own sake.
+
+        Counts, a time and a flag - never the event's title. That is the one rule
+        the action log has had since it existed, and this is where it costs the
+        most, because a reminder line with no title in it looks like a line with
+        a hole in it. What is kept instead is the thing you actually need to
+        answer "was it early enough": **when the event starts** and how far ahead
+        of it this line was written. A title can be read in the calendar; the
+        timing is the part only this log knows.
+
+        One limit on `shown`, stated here because a count reads as more than it
+        is: it counts notifications **Chrome accepted**, not banners drawn. The
+        two come apart - macOS can silence an app without telling it, and five
+        accepted calls beside an empty screen is a thing that has happened. So a
+        line here proves the worker ran and the rule matched; only your eyes can
+        finish the sentence.
+        """
+        if DEMO_MODE:
+            # A public demo has no extension behind it, and this log is the
+            # operator's own machine's log: an anonymous visitor writing lines
+            # into it is a small abuse with no upside. No line recording the
+            # refusal either - a refused token is a fact about the gate, but
+            # refused *content* has never been written down here.
+            self._fail(400, "this server is a demo and has no extension to remind")
+            return
+
+        payload, problem = self._read_json()
+        if problem:
+            self._fail(400, problem)
+            return
+        payload = payload if isinstance(payload, dict) else {}
+
+        counts = {}
+        for field in ("shown", "failed"):
+            value = payload.get(field, 0)
+            # `isinstance(True, int)` is true in Python, so a bool has to be
+            # turned away *before* the integer check or `"shown": true` reads as
+            # one reminder shown.
+            if isinstance(value, bool) or not isinstance(value, int):
+                self._fail(400, f"field {field!r} must be an integer")
+                return
+            if not 0 <= value <= REMINDER_REPORT_MAX:
+                self._fail(
+                    400,
+                    f"field {field!r} must be between 0 and {REMINDER_REPORT_MAX}",
+                )
+                return
+            counts[field] = value
+
+        manual = payload.get("manual", False)
+        if not isinstance(manual, bool):
+            self._fail(400, "field 'manual' must be true or false")
+            return
+
+        if counts["shown"] + counts["failed"] == 0:
+            # "Nothing happened" is not an event. A log that accepts those fills
+            # with the polls that found nothing to do, and the lines that matter
+            # are five minutes apart in a file nobody can scan.
+            self._fail(400, "a report must claim at least one notification")
+            return
+
+        soonest = None
+        if payload.get("soonest") is not None:
+            soonest = reminder_time(payload.get("soonest"))
+            if soonest is None:
+                self._fail(400, "field 'soonest' must be a local HH:MM time when present")
+                return
+
+        self._log(
+            "reminder_fired",
+            shown=counts["shown"],
+            failed=counts["failed"],
+            soonest_start=soonest,
+            manual=manual,
+        )
+        self._send(
+            200,
+            {
+                "ok": True,
+                "event": "reminder_fired",
+                "shown": counts["shown"],
+                "failed": counts["failed"],
+                "soonest_start": soonest,
+                "manual": manual,
+            },
+            no_store=True,
+        )
+
     def do_GET(self):
         path = self.path.split("?")[0]
 
@@ -2552,6 +2684,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path.split("?")[0] == "/speak":
             self._speak()
+            return
+
+        if self.path.split("?")[0] == "/reminders":
+            # The extension's own report of what it just put on screen. See
+            # `_reminder_report` for why a notification in the browser needs a
+            # route on the backend at all.
+            self._reminder_report()
             return
 
         if self.path.split("?")[0] != "/turn":
