@@ -484,9 +484,11 @@ def _eval(node, depth=0):
         if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
             raise ToolError("only numbers are allowed in an expression.")
         return node.value
-    # Python 3.7 keeps these for compatibility; both mean "a number literal".
-    if isinstance(node, ast.Num):
-        return node.n
+    # No `ast.Num` branch: `ast.parse` has produced `ast.Constant` for a numeric
+    # literal since 3.8, so the old alias was dead code that only existed to
+    # raise. Python 3.14 removed `ast.Num` outright, and on 3.14 every suite that
+    # calls `calculate` failed with "module 'ast' has no attribute 'Num'" - which
+    # also killed the tool over HTTP, as a closed connection rather than a reply.
     if isinstance(node, ast.BinOp):
         if isinstance(node.op, ast.Pow):
             return _power(_eval(node.left, depth + 1), _eval(node.right, depth + 1))

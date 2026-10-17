@@ -75,8 +75,20 @@ class TestWhatWeSpent(unittest.TestCase):
         for _ in range(100_000):
             table.record_turn(0.0001)
         self.assertEqual(table.snapshot()["cost_usd"], 10.0)
-        # The same arithmetic in floats, for contrast: it does drift.
-        self.assertNotEqual(sum([0.0001] * 100_000), 10.0)
+        # The same arithmetic in floats, one call at a time, for contrast: it
+        # drifts - 9.999999999990033 on every version measured.
+        #
+        # Added by hand rather than with `sum()` on purpose. Python 3.12 gave
+        # `sum()` Neumaier compensation (gh-100425), so `sum([0.0001] * 100_000)`
+        # is **exactly 10.0** from 3.12 on. Written with `sum()` - the way it was
+        # first written - this assertion is therefore green on 3.9 and red from
+        # 3.12 on, which is a failure on one leg of CI's own version matrix and
+        # on nothing else. A hand-rolled loop is what the store does anyway, and
+        # it says the same thing on every version.
+        total = 0.0
+        for _ in range(100_000):
+            total += 0.0001
+        self.assertNotEqual(total, 10.0)
 
     def test_the_credit_left_is_what_the_budget_has_not_seen(self):
         table = Spend(cap=20, credit_usd=25.0)
