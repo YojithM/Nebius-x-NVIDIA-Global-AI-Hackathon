@@ -75,13 +75,13 @@ Browser → backend on Nebius → Nemotron on Token Factory. That's the whole sh
 
 Every tier lives in exactly one file, [`config/models.json`](config/models.json). Change a model there and the whole app follows.
 
-> The diagram above is the **target** architecture. The voice loop, the four tabs (Today, Memory, Progress, Log), the router, memory, page reading, the quiz loop, the scheduler and the general agent loop all exist today; the Skills tab is still to come, and so is any kind of code sandbox — see the note on `calculate` below for why that one is deliberate.
+> The diagram above is the **target** architecture. The voice loop, the four tabs (Today, Memory, Progress, Log), the router, memory, page reading, the quiz loop, the scheduler and the general agent loop all exist today; the Skills tab is still to come, and so is any kind of code sandbox — see the note on `calculate` below for why that one is deliberate. One addition since the sketch: replies can be spoken by **ElevenLabs through the backend** (Step 13), so that key too lives server-side. With no key, Chrome's own voice speaks them, which is what the panel did before.
 
 ---
 
 ## Try it in 60 seconds
 
-> **Honest status:** Steps 0–6 and 8–12 are done. **Step 12** added a read-only **Google Calendar** section to the brief: Cadence can see what is coming up and can never change an event, because `calendar.readonly` is the only permission it asks for — the [setup is below](#let-cadence-see-your-calendar). Step 11 finished with grounded citations, the agent writing its own skill, and the per-request cost warning, all described below. The voice loop, the router, persistent memory, page reading, the quiz loop, the daily brief and the general agent loop all work — ask *"break lab report 3 into study blocks"* and Nemotron Nano picks the `study_breakdown` skill, which then runs on Super; say *"remember my midterm is on November 12"* and it is written to a Markdown file you own, visible in the Memory tab; say *"quiz me on this page"* and it asks you questions, grades your spoken answers, and records the result in the **Progress** tab. The brief at the top of **Today** says what is due without spending anything, the **Log** tab shows what the backend just did, and every reply carries what it cost. A searched answer now names the pages it came from: the reply cites them by number, the links under it open the real pages, and a citation with no page behind it is dropped rather than shown. There is still **no hosted demo URL** — Step 7's deploy is blocked on the Nebius account, not on code — but there is a `/demo` mode you can run yourself, with a bundled sample course load and no extension install. And if the machine you are on has no microphone, the panel does not leave you with a dead button: press **Type instead**, or just watch the text box open by itself when the browser has no speech recognition. There are exactly **six** hand-written skills plus the router — and the agent can now draft a *new* one for you to read and approve (say *"write yourself a skill for turning a lab report into study blocks"*): the file is shown in full before it exists, nothing is written until you say yes, and the next request can use it without a restart. Everything below is real, and the fast parts take about two minutes.
+> **Honest status:** Steps 0–6 and 8–13 are done. **Step 12** added a read-only **Google Calendar** section to the brief: Cadence can see what is coming up and can never change an event, because `calendar.readonly` is the only permission it asks for — the [setup is below](#let-cadence-see-your-calendar). Step 11 finished with grounded citations, the agent writing its own skill, and the per-request cost warning, all described below. The voice loop, the router, persistent memory, page reading, the quiz loop, the daily brief and the general agent loop all work — ask *"break lab report 3 into study blocks"* and Nemotron Nano picks the `study_breakdown` skill, which then runs on Super; say *"remember my midterm is on November 12"* and it is written to a Markdown file you own, visible in the Memory tab; say *"quiz me on this page"* and it asks you questions, grades your spoken answers, and records the result in the **Progress** tab. The brief at the top of **Today** says what is due without spending anything, the **Log** tab shows what the backend just did, and every reply carries what it cost. A searched answer now names the pages it came from: the reply cites them by number, the links under it open the real pages, and a citation with no page behind it is dropped rather than shown. **Step 13** gave the panel a better voice: an optional ElevenLabs key, held by the backend, reads replies aloud in something that does not sound like a GPS — and with no key, or with the account out of credits, Chrome's own voice takes over instead of going silent (see [A better voice](#a-better-voice-optional)). There is still **no hosted demo URL** — Step 7's deploy is blocked on the Nebius account, not on code — but there is a `/demo` mode you can run yourself, with a bundled sample course load and no extension install. And if the machine you are on has no microphone, the panel does not leave you with a dead button: press **Type instead**, or just watch the text box open by itself when the browser has no speech recognition. There are exactly **six** hand-written skills plus the router — and the agent can now draft a *new* one for you to read and approve (say *"write yourself a skill for turning a lab report into study blocks"*): the file is shown in full before it exists, nothing is written until you say yes, and the next request can use it without a restart. Everything below is real, and the fast parts take about two minutes.
 
 **1. Clone and set up the key**
 
@@ -378,13 +378,22 @@ lives only in this process's memory. The reply is a plain page that says what wa
 granted, in words: read-only.
 
 **Where it shows up.** Under the deadlines, labelled `From your calendar`, one line
-per event — `tomorrow — Chemistry lab (14:00, Cavendish 2.14)` — read fresh, capped
-at ten, looking seven days ahead like the deadlines beside it. It is a separate
+per event — `tomorrow — Chemistry lab (14:00, Cavendish 2.14)` — read fresh from
+every calendar you can see (up to eight), capped at ten, looking seven days ahead
+like the deadlines beside it. It is a separate
 request (`GET /calendar`) so a slow or unreachable Google cannot delay them, reused
 for a minute, and **never written into memory**: a moved event cannot leave a stale
 note behind. `/health` reports `calendar.configured` and `calendar.connected` as
 two separate booleans, because "no OAuth client on this machine" is a setup problem
 and "not connected yet" is a button.
+
+**You can also just ask.** The agent has a `read_calendar` tool over the same
+read-only path, so *"what is my upcoming event?"* is answered from the calendar
+rather than from a guess: it returns the events with their dates, takes an
+optional `days` window (1–30, default 7), and is the only part of the conversation
+allowed to state an event. Before it existed the honest answer was *"I'm not able
+to view your Google Calendar"* — true, and useless. `read_calendar` is off in demo
+mode too, for the same reason the brief is.
 
 **What it costs:** nothing. The lines are composed in code from Google's JSON, the
 same way the deadline lines are — no model call, `cost_usd: 0`.
@@ -395,17 +404,127 @@ same way the deadline lines are — no model call, `cost_usd: 0`.
   flow has to run on the machine running the backend. A server can *hold* a token
   connected locally (copy `data/google-token.json` plus the same client ID), but it
   cannot run the flow itself — see [`deploy/README.md`](deploy/README.md).
-- **It reads one calendar** — the primary one — and no other Google product.
+- **It reads every calendar you can see**, up to eight of them: your own, a course
+  calendar shared with you, a project calendar, work. Each is one request (four at
+  a time), the primary is always included and kept first, hidden and deleted
+  calendars are skipped because hiding one is a preference, and anything that
+  fails is reported in the payload rather than silently dropping that calendar's
+  week. With more than one calendar in play, each line ends with where it came
+  from (`tomorrow — Standup (09:30) · Work`). Still no other Google product.
 - **It shows, it does not notify.** There is no push, no desktop notification, no
   alarm. The nudge is a brief you have to open, which is the half of "remind me"
   this step did not build.
 - **A read can be up to a minute stale**, deliberately, because the panel asks on
   every open and after every turn.
+- **An app left in *testing* mode forgets you weekly.** Google expires refresh
+  tokens issued to an unpublished OAuth app after **seven days**, so the connect
+  button comes back about once a week until the app is published. This is
+  Google's rule, not ours — the token file is simply rejected and the panel shows
+  the Connect link again, with nothing else affected.
 - **Disconnect** with `curl -X DELETE http://127.0.0.1:8787/calendar`, or by deleting
   `data/google-token.json`. The file is written `0600`, is gitignored, and never
   leaves the machine.
 
 ---
+
+## A better voice (optional)
+
+Step 13. Chrome's `speechSynthesis` is free and private and sounds like it. If you
+want replies read in a real voice, set one variable:
+
+```bash
+# .env
+ELEVENLABS_API_KEY=sk_...        # https://elevenlabs.io -> profile -> API keys
+```
+
+Restart the backend and reload the panel. Nothing else changes: no extension
+rebuild, no second token, no setting in the UI. `/health` reports what will
+happen before you speak:
+
+```json
+"voice": {
+  "provider": "elevenlabs", "configured": true, "available": true,
+  "model": "eleven_flash_v2_5", "voice_id": "pNInz6obpgDQGcFmaJgB",
+  "max_chars": 1500, "cost_per_1k_chars_usd": 0.04, "off": null
+}
+```
+
+**The key never reaches the browser.** The panel posts the reply to
+`POST /speak` on its own backend and gets MP3 bytes back; the key exists in this
+process's environment and in the outbound request, nowhere else. That is the same
+rule as `NEBIUS_API_KEY`, and there is a test that reads `/health` back looking
+for it. `POST /speak` sits behind `CADENCE_TOKEN` like every other route, which
+matters more here than anywhere else: it is the one endpoint a caller can *bill
+you* with, so the gate is what stops a stranger spending your characters.
+
+**It falls back rather than going silent.** Four failures, four different
+sentences, all of them ending in Chrome's voice reading the reply anyway:
+
+| Cause | Backend answers | What the panel does |
+|---|---|---|
+| No key set | `400` naming `ELEVENLABS_API_KEY` | speaks locally, says nothing (this is the normal no-key path) |
+| Key rejected | `400` naming the variable and the status | local voice + a notice |
+| Voice not on the plan | `402` (`plan`) | local voice + a notice naming `ELEVENLABS_VOICE_ID` |
+| Out of credits | `402` (`quota`) | local voice + a notice: top up at elevenlabs.io |
+| Rate limited | `429` | local voice + a notice: try again in a moment |
+
+Those are deliberately distinct. Reporting a 402 as "rate limited" would send you
+off to wait for a storm that is never going to pass, and reporting a
+*plan-restricted voice* as "out of credits" would send you to buy credits that
+would not fix it.
+
+**What it costs, and what is capped.** ElevenLabs bills per character: the
+published API price for the Flash family is $0.04 per 1,000 characters, which is
+about a hundredth of a cent for a two-sentence reply. Three things keep that from
+being an open tap:
+
+- **A 1,500-character cap**, cut at the last sentence boundary. It is long enough
+  for a paragraph and short enough that a runaway reply cannot become a bill. When
+a reply is cut, the panel says the first part was read aloud rather than quietly
+  showing text it never spoke.
+- **A bounded in-memory cache** (24 replies / 4 MB), so **Speak again** is free
+  and instant. Nothing is written to disk — a cache file would become a recording
+  of what you were told.
+- **The cost line counts it.** Speech is added to the same process total the
+  panel shows, in its own `voice` block in `/health` so "what did the models cost"
+  stays answerable. A cache hit adds nothing, and a failed synthesis adds nothing.
+- The number is an estimate from the published rate, not a bill. When ElevenLabs
+  reports what it actually charged (`character-cost`), that number wins.
+
+**The privacy cost is real, so it is stated.** Chrome's voice is local. This one
+sends the reply's words to ElevenLabs, and a reply can quote you — *"your organic
+chemistry midterm is on November 12"* is the student's own information leaving the
+machine. The demo never uses the key even when one is set, because a stranger's
+reply would be billed to the operator; `/health` reports `voice.off: "demo"` there
+and the panel uses the local voice.
+
+**Choosing a voice.** The default is Adam (`pNInz6obpgDQGcFmaJgB`), a *premade*
+voice. It was Rachel, the id in ElevenLabs' own docs, until a free-plan key was
+tried against it: Rachel is one of the **library** voices now, and a free account
+is refused those with `402 paid_plan_required` — so the old default failed on the
+plan most people try first. Adam, Sarah, Daniel and George all answered `200` on
+the same free key (verified live), while Rachel, Josh and Aria did not. To use
+another, list the ones your account has:
+
+```bash
+curl -s -H "xi-api-key: $ELEVENLABS_API_KEY" https://api.elevenlabs.io/v1/voices \
+  | python3 -c 'import json,sys; [print(v["voice_id"], "-", v["name"]) for v in json.load(sys.stdin)["voices"]]'
+```
+
+Then set `ELEVENLABS_VOICE_ID` to one of them. `ELEVENLABS_MODEL_ID` is
+`eleven_flash_v2_5` by default — the low-latency model the docs recommend for
+exactly this case; `eleven_multilingual_v2` is slower and costs twice as much per
+character.
+
+**Deliberate limits.** Synthesis is a single request, not a stream: for a
+one-sentence reply the difference is a few hundred milliseconds, and streaming is
+the next optimisation rather than a first version. There is no per-student voice
+and no audio on disk. And the honest one: **this has been tested against a stub
+that mimics ElevenLabs' API, not against the live service with a real key** — the
+request shape, the error mapping, the cap, the cache, the spend and the log are
+all covered by `backend/tests/test_voice.py`, but the first real key you add is
+also the first real synthesis here. If it fails, the panel tells you which of the
+four causes it is and keeps talking in Chrome's voice.
 
 ## How we use NVIDIA Nemotron
 
@@ -495,6 +614,9 @@ cp .env.example .env
 | `GOOGLE_CLIENT_ID` | no | Read-only Google Calendar in the brief. A **Desktop app** OAuth client; without it the calendar section is simply absent and no request is made. See [Let Cadence see your calendar](#let-cadence-see-your-calendar). |
 | `GOOGLE_CLIENT_SECRET` | no | Only if your OAuth client issued one — a desktop client is a public client, and requiring a secret here would break a correct setup. |
 | `CADENCE_GOOGLE_TOKEN` | no | Where the refresh token is kept. Default `data/google-token.json` (gitignored, `0600`). |
+| `ELEVENLABS_API_KEY` | no | Spoken replies from ElevenLabs instead of Chrome's built-in voice (Step 13). Backend only — the panel asks this backend for audio and never sees the key. Without it everything still speaks. See [A better voice](#a-better-voice-optional). |
+| `ELEVENLABS_VOICE_ID` | no | Which voice. Default Adam (`pNInz6obpgDQGcFmaJgB`) — a premade voice, usable on the free plan. |
+| `ELEVENLABS_MODEL_ID` | no | Default `eleven_flash_v2_5`, the low-latency model. |
 
 Without either key the loop still answers — it just reports what it could not check, and `/health` says so under `tools.search.configured` rather than pretending otherwise.
 

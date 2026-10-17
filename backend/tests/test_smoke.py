@@ -378,7 +378,7 @@ class SmokeTest(unittest.TestCase):
         # Bumped to 12 with Step 12's read-only calendar (the done-ness of the code
         # is what this field reports; Step 7 is written and verified but not
         # deployed, and has its own field for that).
-        self.assertEqual(body["step"], 12)
+        self.assertEqual(body["step"], 13)
         # Step 10's three additions are part of the contract the panel reads on
         # load: what this backend has spent, whether a demo is running, and
         # whether there is a panel to serve at /demo.
@@ -393,7 +393,8 @@ class SmokeTest(unittest.TestCase):
         # The tool set, and whether search can actually run. Reported because a tool
         # we offer the model without a key is a promise this backend cannot keep.
         self.assertEqual(
-            body["tools"]["names"], ["web_search", "calculate", "propose_skill"]
+            body["tools"]["names"],
+            ["web_search", "calculate", "read_calendar", "propose_skill"],
         )
         self.assertEqual(body["tools"]["search"], {"configured": False, "provider": None})
         self.assertIn("not a code sandbox", body["tools"]["code_execution"])

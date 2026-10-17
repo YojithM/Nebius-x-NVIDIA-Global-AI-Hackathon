@@ -160,6 +160,22 @@ class Spend:
             self.steps += max(0, int(steps or 0))
             self.last_turn = time.time()
 
+    def record_voice(self, cost_usd, chars=0) -> None:
+        """One synthesis (Step 13). Counted in the total, never as a turn.
+
+        Speech is not a turn and must not inflate the turn count - a turn is a
+        question that was answered, and a reply spoken twice is still one
+        question. But it *is* money, so it belongs in the process total, or the
+        cost line would claim we spent less than we did. The `voice` block keeps
+        the two separable for anyone reading `/health`.
+        """
+        micro = _micro_from_usd(cost_usd)
+        with self._lock:
+            self.micro += micro
+            self.voice_requests += 1
+            self.voice_micro += micro
+            self.voice_chars += max(0, int(chars or 0))
+
     # ------------------------------------------------------------- sessions --
 
     def take(self, session_id, cap=None) -> dict:
@@ -240,6 +256,13 @@ class Spend:
                 # in `calls` and here, but never in the total, because the total is
                 # what we can stand behind and a crashed turn's cost is an estimate.
                 "calls_cost_usd": _usd_from_micro(self.called_micro),
+                # Text to speech (Step 13): included in `cost_usd` above, kept
+                # apart here so "what did the models cost" stays answerable.
+                "voice": {
+                    "requests": self.voice_requests,
+                    "characters": self.voice_chars,
+                    "cost_usd": _usd_from_micro(self.voice_micro),
+                },
                 "by_tier": {
                     tier: {
                         "calls": row["calls"],
@@ -264,6 +287,9 @@ class Spend:
             self.steps = 0
             self.micro = 0
             self.called_micro = 0
+            self.voice_requests = 0
+            self.voice_micro = 0
+            self.voice_chars = 0
             self.by_tier = {}
             self.last_turn = 0.0
             self._sessions = {}

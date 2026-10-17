@@ -55,6 +55,7 @@ from quiz import (  # noqa: E402
     clamp_count,
 )
 import gcal  # noqa: E402
+import voice  # noqa: E402
 from router import extract_json_object, route  # noqa: E402
 from scheduler import (  # noqa: E402
     DEFAULT_HORIZON_DAYS,
@@ -65,7 +66,13 @@ from scheduler import (  # noqa: E402
 )
 from skills import SkillRegistry  # noqa: E402
 from spend import Spend, per_request_warning  # noqa: E402
-from tools import TOOL_NAMES, search_available, search_provider, tool_cards  # noqa: E402
+from tools import (  # noqa: E402
+    TOOL_NAMES,
+    run_tool,
+    search_available,
+    search_provider,
+    tool_cards,
+)
 from webapp import StaticApp  # noqa: E402
 
 # Read .env into the environment FIRST. Everything below - the bind address,
@@ -149,6 +156,24 @@ CALENDAR = gcal.TokenStore()
 # The connect attempts this process has started. In memory on purpose: a state that
 # survives a restart is a state with a longer life than the sign-in it belongs to.
 CALENDAR_PENDING = gcal.PendingFlows()
+
+# ---------------------------------------------------------- the voice (13) --
+# ElevenLabs, called from here so the key never reaches the extension. No object
+# to hold: `voice` is stateless apart from its bounded audio cache, which is why
+# "Speak again" costs nothing. The status codes are the ones a student can act on
+# differently - an empty account is 402, a rate limit is 429, and a bad key is a
+# setup mistake rather than a server fault.
+VOICE_STATUS = {
+    "empty": 400,
+    "demo": 400,
+    "no_key": 400,
+    "auth": 400,
+    "quota": 402,
+    "plan": 402,
+    "rate_limited": 429,
+    "upstream": 502,
+    "unreachable": 502,
+}
 
 # How much of a page we will ever accept. Bounded on purpose: a page is a
 # document, and a document is a stick to beat a context window with. The panel
@@ -502,6 +527,26 @@ def _date_phrase(deadline) -> str:
     return "{0} days away".format(deadline.days_left)
 
 
+def calendar_for_tool(days=None):
+    """The agent's `read_calendar` source: the same read the brief does.
+
+    A function rather than a payload because the tool is asked for a window at
+    call time, and because the seam keeps `tools.py` free of the token store, the
+    demo flag and the read-only promise - all of which live here.
+    """
+    return calendar_payload(days)
+
+
+def _run_tool_for_turn(name, args):
+    """`run_tool`, with this server's calendar attached.
+
+    Search and arithmetic need no state; the calendar does, and a tool that could
+    read it must go through the one store that also handles `reconnect` and the
+    demo's refusal.
+    """
+    return run_tool(name, args, calendar=calendar_for_tool)
+
+
 def general_reply(transcript, page_title, memory="", context=None, max_steps=None):
     """The open-ended path: a plan with tools (Step 9).
 
@@ -541,6 +586,7 @@ def general_reply(transcript, page_title, memory="", context=None, max_steps=Non
         tier=tier,
         log=(context or {}).get("log"),
         max_steps=MAX_STEPS if max_steps is None else max_steps,
+        run=_run_tool_for_turn,
     )
     return {
         "reply": outcome["reply"],
@@ -826,7 +872,7 @@ def _esc(text) -> str:
     )
 
 
-def calendar_payload() -> dict:
+def calendar_payload(days=None) -> dict:
     """Read the student's Google Calendar, or say plainly why not.
 
     Never raises: a calendar is the second thing in the brief and must not be able
@@ -848,9 +894,11 @@ def calendar_payload() -> dict:
             explanation="This is the demo, so there is no calendar behind it.",
         )
 
-    payload = gcal.section(
-        CALENDAR, today=_today_date(), horizon_days=BRIEF_HORIZON_DAYS
-    )
+    # The brief asks for its own horizon; the agent's calendar tool asks for the
+    # window the student's question implies ("this week", "this month"), bounded by
+    # the tool's own cap. One read path, so both answer from the same data.
+    horizon = BRIEF_HORIZON_DAYS if days is None else max(1, min(30, int(days)))
+    payload = gcal.section(CALENDAR, today=_today_date(), horizon_days=horizon)
     error = payload.get("error") or {}
     counts = payload.get("counts") or {}
     if error:
@@ -1909,6 +1957,36 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_audio(self, status, audio, meta):
+        """Answer with MP3 bytes, and the numbers that make the panel honest.
+
+        The second route that is not JSON, and the first that costs money per
+        byte it sends. The `X-Cadence-Spoken-*` headers are what the panel uses
+        to tell the student when a long reply was shortened out loud, and to say
+        "again" without implying a second charge when the cache answered. They
+        have to be *exposed* or cross-origin JavaScript cannot see them - a
+        header that exists and is unreadable is the same as one that does not.
+        """
+        self.send_response(status)
+        self._cors()
+        self.send_header("Content-Type", "audio/mpeg")
+        self.send_header("Content-Length", str(len(audio)))
+        # A reply is about this exchange; a cached copy saved by the browser would
+        # be audio for a question that is no longer on screen.
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Cadence-Spoken-Chars", str(meta.get("chars", 0)))
+        self.send_header(
+            "X-Cadence-Spoken-Truncated", "1" if meta.get("truncated") else "0"
+        )
+        self.send_header("X-Cadence-Spoken-Cached", "1" if meta.get("cached") else "0")
+        self.send_header(
+            "Access-Control-Expose-Headers",
+            "X-Cadence-Spoken-Chars, X-Cadence-Spoken-Truncated, "
+            "X-Cadence-Spoken-Cached",
+        )
+        self.end_headers()
+        self.wfile.write(audio)
+
     @staticmethod
     def _panel_route(path):
         """Is this request for the built panel?
@@ -2113,6 +2191,55 @@ class Handler(BaseHTTPRequestHandler):
         self._log("calendar_start", issued_state=True)
         self._redirect(gcal.authorize_url(state=state, verifier=verifier, port=PORT))
 
+    def _speak(self):
+        """POST /speak: {text} -> the same words as audio.
+
+        Sits behind the token like every other route, which matters more here
+        than anywhere else: this is the one endpoint a caller can bill us with,
+        and the gate is what stops a stranger spending the key's characters.
+
+        Two things it deliberately does not accept: a `voice` or `model` from the
+        client (a browser that chooses the model chooses what we pay), and an
+        empty body. What it does log is counts - characters, milliseconds, cost -
+        because the reply can quote the student's own words and the log has never
+        held those.
+        """
+        payload, problem = self._read_json()
+        if problem:
+            self._fail(400, problem)
+            return
+
+        text = (payload or {}).get("text")
+        if not isinstance(text, str) or not text.strip():
+            self._fail(400, "field 'text' must be a non-empty string")
+            return
+
+        try:
+            audio, meta = voice.synthesize(text, demo=DEMO_MODE)
+        except voice.VoiceError as exc:
+            # The code, never the text: "quota" is a fact about our account and
+            # the sentence is a fact about the student's afternoon.
+            self._log("speak", outcome=exc.code)
+            self._fail(VOICE_STATUS.get(exc.code, 502), str(exc))
+            return
+
+        if not meta["cached"]:
+            # A cache hit cost nothing, so booking it again would make the cost
+            # line wrong in the one direction nobody forgives: claiming we spent
+            # money we did not.
+            SPEND.record_voice(meta["cost_usd"], meta["chars"])
+
+        self._log(
+            "speak",
+            chars=meta["chars"],
+            cost_usd=meta["cost_usd"],
+            ms=meta["ms"],
+            truncated=meta["truncated"],
+            cached=meta["cached"],
+            audio_bytes=meta["audio_bytes"],
+        )
+        self._send_audio(200, audio, meta)
+
     def do_GET(self):
         path = self.path.split("?")[0]
 
@@ -2139,7 +2266,7 @@ class Handler(BaseHTTPRequestHandler):
                     "service": "cadence-backend",
                     # The last step whose code is all here. Step 7 is written and
                     # verified but not deployed, and says so itself.
-                    "step": 12,
+                    "step": 13,
                     "mode": "router",
                     "tiers": {
                         name: cfg["model"] for name, cfg in CONFIG["tiers"].items()
@@ -2188,6 +2315,7 @@ class Handler(BaseHTTPRequestHandler):
                         "scope": gcal.SCOPE,
                         "off": "demo" if DEMO_MODE else None,
                     },
+                    "voice": voice.describe(demo=DEMO_MODE),
                     "tools": {
                         # The tool set, and whether each one can run right now. A
                         # tool we offer the model without a key would be a promise
@@ -2372,6 +2500,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._authorized():
             self._unauthorized()
+            return
+
+        if self.path.split("?")[0] == "/speak":
+            self._speak()
             return
 
         if self.path.split("?")[0] != "/turn":

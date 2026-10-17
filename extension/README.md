@@ -122,6 +122,15 @@ yet` instead of a 0% that would be a lie.
    (greyed out and italic while provisional).
 3. When you stop, the turn goes to the backend and the reply appears and is
    spoken aloud.
+
+   **Which voice speaks it is the backend's decision, not the panel's.** With
+   `ELEVENLABS_API_KEY` set, the panel asks the backend for audio
+   (`POST /speak`) and plays it — the key never enters the bundle, and the panel
+   never sees it. With no key, or after a quota, rate-limit, bad-key or
+   unreachable failure, Chrome's own voice reads the reply instead and the notice
+   line says why it suddenly sounds different. A reply longer than 1,500
+   characters is read in part, and the notice says so. **Speak again** comes from
+   the backend's small cache, so repeating it is free and instant.
 4. The small line under each reply shows **which skill the router picked**, then
    latency, cost, tier, and the page title that was sent:
 

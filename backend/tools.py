@@ -53,6 +53,7 @@ import json
 import math
 import operator
 import os
+from datetime import date, timedelta
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -645,6 +646,108 @@ def propose_skill(name, skill_md, *, root=None, tiers=None):
     }
 
 
+# How far the calendar tool looks, and how far it may be asked to. The brief shows
+# a week; a student asking "what's coming up" may mean the month, and thirty days
+# is small enough to stay inside a prompt.
+CALENDAR_DAYS_DEFAULT = 7
+CALENDAR_DAYS_MAX = 30
+
+
+def read_calendar(days=None, *, section=None, today=None):
+    """The student's Google Calendar, read-only. -> {"text": ...}.
+
+    `section` is injected by the server, which owns the token store, the demo flag
+    and the read-only token - the same seam `opener` is for search. Nothing in here
+    touches Google, which is why this tool cannot write: there is no code path from
+    it to an API call at all.
+
+    The text is what the model reasons over, so it carries the absolute dates as
+    well as the relative phrase: "tomorrow" is not enough to plan around, and
+    "2026-10-20 (in 3 days)" is.
+    """
+    if section is None:
+        raise ToolError(
+            "this server has no calendar attached, so there is nothing to read.",
+            "no_calendar",
+        )
+    if days in (None, ""):
+        horizon = CALENDAR_DAYS_DEFAULT
+    else:
+        try:
+            # `7.0` is a whole number spelled differently; `2.5` is a different
+            # window than the one asked for, so it is refused rather than rounded.
+            number = float(days)
+            if number != int(number):
+                raise ValueError("not a whole number")
+            horizon = int(number)
+        except (TypeError, ValueError):
+            raise ToolError(
+                "days has to be a whole number between 1 and {0}.".format(CALENDAR_DAYS_MAX),
+                "bad_args",
+            ) from None
+        if horizon < 1 or horizon > CALENDAR_DAYS_MAX:
+            raise ToolError(
+                "days has to be a whole number between 1 and {0}.".format(CALENDAR_DAYS_MAX),
+                "bad_args",
+            )
+
+    payload = section(horizon) or {}
+    error = payload.get("error") or {}
+    if error and isinstance(error, dict):
+        raise ToolError(
+            str(error.get("message") or "the calendar could not be read"),
+            str(error.get("code") or "failed"),
+        )
+    if not payload.get("connected"):
+        raise ToolError(
+            str(
+                payload.get("explanation")
+                or "the student's Google Calendar is not connected, so there is "
+                "nothing to read. They can connect it from the brief."
+            ),
+            "not_connected",
+        )
+
+    day = today or date.today()
+    end = day + timedelta(days=horizon)
+    lines = payload.get("lines") or []
+    names = [str(cal.get("name") or "") for cal in payload.get("calendars") or [] if isinstance(cal, dict)]
+    if not lines:
+        return {
+            "text": (
+                "Nothing is scheduled on the student's calendar between {0} and {1} "
+                "({2} days){3}. Say the calendar is empty for that window; do not "
+                "describe an event that is not here."
+            ).format(
+                day.isoformat(),
+                end.isoformat(),
+                horizon,
+                " across " + ", ".join(names) if names else "",
+            )
+        }
+
+    events = payload.get("events") or []
+    rows = []
+    for index, line in enumerate(lines):
+        event = events[index] if index < len(events) else {}
+        day_text = str(event.get("day") or "")
+        rows.append("- {0}{1}".format(line, " [" + day_text + "]" if day_text else ""))
+
+    text = "The student's calendar, {0} to {1} ({2} days){3}:\n{4}".format(
+        day.isoformat(),
+        end.isoformat(),
+        horizon,
+        " across " + ", ".join(names) if names else "",
+        "\n".join(rows),
+    )
+    if (payload.get("counts") or {}).get("more"):
+        text += (
+            "\n(Google had more events than this list holds; say so if the student "
+            "asks for the whole picture.)"
+        )
+    return {"text": text}
+
+
 # ------------------------------------------------------------- the tool set ---
 #
 # One place that says what exists. The loop renders its prompt from these cards
@@ -673,6 +776,18 @@ _TOOL_CARDS = (
             "mean, min, radians, round, sin, sqrt, sum, tan. It cannot read "
             "files, use the network, or run a program, and it has no dates: a "
             "countdown is a fact you are given, not a calculation you do."
+        ),
+    },
+    {
+        "name": "read_calendar",
+        "args": {"days": "integer 1-30, optional; default 7"},
+        "when": (
+            "Use it whenever the student asks about their own schedule: what is on "
+            "their calendar, their next event, what is coming up this week, whether "
+            "they are busy on a given day. It reads their Google Calendar "
+            "(read-only) and returns the events as lines with dates. Never say you "
+            "cannot see their calendar without calling it, and never state an event "
+            "that is not in the result - if the result is empty, the window is empty."
         ),
     },
     {
@@ -736,7 +851,7 @@ def tool_help():
     return json.dumps({"tools": tool_cards()}, ensure_ascii=False, indent=2)
 
 
-def run_tool(name, args, *, opener=None, timeout=SEARCH_TIMEOUT, skills_root=None):
+def run_tool(name, args, *, opener=None, timeout=SEARCH_TIMEOUT, skills_root=None, calendar=None):
     """Run one tool call. Never raises for anything the model did.
 
     -> {"name", "ok", "text", "sources", "reason", "draft"}. A failure is a
@@ -763,6 +878,8 @@ def run_tool(name, args, *, opener=None, timeout=SEARCH_TIMEOUT, skills_root=Non
     try:
         if name == "calculate":
             result = calculate(args.get("expression"))
+        elif name == "read_calendar":
+            result = read_calendar(args.get("days"), section=calendar)
         elif name == "propose_skill":
             result = propose_skill(args.get("name"), args.get("skill_md"), root=skills_root)
         else:

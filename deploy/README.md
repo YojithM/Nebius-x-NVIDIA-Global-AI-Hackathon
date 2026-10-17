@@ -56,6 +56,7 @@ Everything is env-driven, so local development is untouched:
 | `CADENCE_BRIEF_DAYS` | how close a deadline counts as a nudge, default `7` days |
 | `CADENCE_BRIEF` | set to `off` to stop the background brief tick |
 | `NEBIUS_API_KEY` | the model key (unchanged) |
+| `ELEVENLABS_API_KEY` | optional: spoken replies from ElevenLabs instead of Chrome's voice (Step 13). Read by the backend only — the extension asks this server for audio and never holds the key, so the deploy does not change. Speech is billed per character: replies are capped at 1,500 characters, repeated replies come from a memory-only cache, and a quota or rate-limit failure falls back to Chrome's voice with a notice rather than silence. `/health` reports `voice.available` so a deploy can be checked without speaking. |
 | `EXA_API_KEY` | optional: the web-search tool the general agent loop can call (Step 9). `TAVILY_API_KEY` is the alternative; Exa wins if both are set. Without one, the loop still answers and says what it could not check, and `/health` reports `tools.search.configured: false` instead of pretending. |
 
 `CADENCE_TOKEN` is the important one. The backend spends your Nebius credit, so a

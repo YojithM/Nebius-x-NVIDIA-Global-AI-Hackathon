@@ -665,7 +665,7 @@ class TestProgressEndpoint(TurnTestCase):
     def test_health_reports_progress(self):
         self.seed_quiz()
         _, payload = HandlerStub(path="/health", command="GET").send()
-        self.assertEqual(payload["step"], 12)
+        self.assertEqual(payload["step"], 13)
         self.assertEqual(payload["progress"]["quizzes"], 1)
         self.assertTrue(payload["progress"]["open_quiz"])
 

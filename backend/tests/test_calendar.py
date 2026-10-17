@@ -31,6 +31,7 @@ import os
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -90,7 +91,9 @@ class FakeGoogle:
     """
 
     def __init__(self, events=None, more=False, token_status=200, token_body=None,
-                 refresh_body=None, events_status=200, events_text=None):
+                 refresh_body=None, events_status=200, events_text=None,
+                 calendars=None, calendar_list_status=200,
+                 events_by_calendar=None, failing_calendars=None):
         self.events = events if events is not None else []
         self.more = more
         self.token_status = token_status
@@ -98,6 +101,12 @@ class FakeGoogle:
         self.refresh_body = refresh_body
         self.events_status = events_status
         self.events_text = events_text
+        # None means "the account has one calendar", which is what every test
+        # written before multi-calendar reading assumed.
+        self.calendars = calendars
+        self.calendar_list_status = calendar_list_status
+        self.events_by_calendar = events_by_calendar
+        self.failing_calendars = failing_calendars or set()
         self.calls = []
 
     def __call__(self, method, url, headers, body, timeout):
@@ -122,10 +131,29 @@ class FakeGoogle:
                     "scope": gcal.SCOPE,
                 }
             )
+        if "/calendarList" in url:
+            if self.calendar_list_status != 200:
+                return self.calendar_list_status, json.dumps(
+                    {"error": {"code": 403, "message": "forbidden"}}
+                )
+            items = self.calendars
+            if items is None:
+                items = [{"id": "primary", "summary": "Primary", "primary": True}]
+            return 200, json.dumps({"items": list(items)})
         if "/events" in url:
+            calendar_id = urllib.parse.unquote(
+                url.split("/calendars/")[1].split("/events")[0]
+            )
+            if calendar_id in self.failing_calendars:
+                return 403, json.dumps(
+                    {"error": {"code": 403, "message": "forbidden"}}
+                )
             if self.events_text is not None:
                 return self.events_status, self.events_text
-            payload = {"items": list(self.events)}
+            items = self.events
+            if self.events_by_calendar is not None:
+                items = self.events_by_calendar.get(calendar_id, [])
+            payload = {"items": list(items)}
             if self.more:
                 payload["nextPageToken"] = "another-page"
             return self.events_status, json.dumps(payload)
@@ -732,9 +760,217 @@ class TestTheQuietPaths(CalendarTestCase):
         store.save({"expires_at": _time.time() + 3600})
         fake = FakeGoogle(events=[all_day_event("1", "Seminar", TODAY.isoformat())])
         gcal.section(store, today=TODAY, now=NOW, transport=fake)
-        self.assertIsNotNone(gcal.cached("calendar:primary:7"))
+        # The key says `all` because the payload now covers every calendar the
+        # account can read; leaving it on one calendar's id would have served a
+        # cached primary-only week to someone who just added a second calendar.
+        self.assertIsNotNone(gcal.cached("calendar:all:7"))
         gcal.forget()
-        self.assertIsNone(gcal.cached("calendar:primary:7"))
+        self.assertIsNone(gcal.cached("calendar:all:7"))
+
+
+class TestMoreThanOneCalendar(CalendarTestCase):
+    """Reading every calendar, not just `primary`.
+
+    The reason this exists: a week that lives on a course calendar is invisible to
+    an integration that only asks Google for `calendars/primary/events`. The page
+    looks empty while the student is busy, which is the worst way for a feature to
+    be wrong - it looks like good news.
+    """
+
+    PRIMARY = {"id": "primary", "summary": "Primary", "primary": True}
+    WORK = {"id": "work@group.calendar.google.com", "summary": "Work"}
+
+    def setUp(self):
+        super().setUp()
+        import time as _time
+
+        self.store = self.connected()
+        self.store.save({"expires_at": _time.time() + 3600})
+
+    # -- helpers ------------------------------------------------------------
+
+    def event(self, event_id, summary, **delta):
+        start = NOW + timedelta(**delta)
+        return timed_event(event_id, summary, iso(start), iso(start + timedelta(hours=1)))
+
+    def read(self, fake, **kwargs):
+        return gcal.section(
+            self.store, today=TODAY, now=NOW, transport=fake, use_cache=False, **kwargs
+        )
+
+    def event_urls(self, fake):
+        return [url for url in fake.urls if "/events" in url]
+
+    # -- the behaviour ------------------------------------------------------
+
+    def test_it_reads_every_calendar_the_account_can_see(self):
+        fake = FakeGoogle(
+            calendars=[self.PRIMARY, self.WORK],
+            events_by_calendar={
+                "primary": [self.event("home", "Seminar", hours=1)],
+                "work@group.calendar.google.com": [self.event("w1", "Standup", hours=2)],
+            },
+        )
+        payload = self.read(fake)
+
+        self.assertEqual([event["title"] for event in payload["events"]], ["Seminar", "Standup"])
+        self.assertEqual(len(self.event_urls(fake)), 2)
+        self.assertTrue(any("/calendars/primary/events" in url for url in fake.urls))
+        self.assertTrue(
+            any("work%40group.calendar.google.com" in url for url in fake.urls),
+            "the second calendar's id was not escaped into its URL",
+        )
+        self.assertEqual([cal["name"] for cal in payload["calendars"]], ["Primary", "Work"])
+
+    def test_a_line_names_its_calendar_only_when_more_than_one_contributed(self):
+        two = FakeGoogle(
+            calendars=[self.PRIMARY, self.WORK],
+            events_by_calendar={
+                "primary": [self.event("home", "Seminar", hours=1)],
+                "work@group.calendar.google.com": [self.event("w1", "Standup", hours=2)],
+            },
+        )
+        lines = self.read(two)["lines"]
+        self.assertTrue(any(line.endswith(" · Work") for line in lines), lines)
+        self.assertTrue(any(line.endswith(" · Primary") for line in lines), lines)
+
+        one = FakeGoogle(events=[self.event("home", "Seminar", hours=1)])
+        lines = self.read(one)["lines"]
+        self.assertEqual(lines, ["today — Seminar (" + (NOW + timedelta(hours=1)).strftime("%H:%M") + ")"])
+        self.assertNotIn(" · ", lines[0], "a single calendar was labelled anyway")
+
+    def test_events_are_sorted_together_rather_than_calendar_by_calendar(self):
+        fake = FakeGoogle(
+            calendars=[self.PRIMARY, self.WORK],
+            events_by_calendar={
+                "primary": [self.event("later", "Essay", days=2)],
+                "work@group.calendar.google.com": [self.event("sooner", "Standup", hours=1)],
+            },
+        )
+        titles = [event["title"] for event in self.read(fake)["events"]]
+        self.assertEqual(titles, ["Standup", "Essay"])
+
+    def test_hidden_and_deleted_calendars_are_not_read(self):
+        fake = FakeGoogle(
+            calendars=[
+                self.PRIMARY,
+                {"id": "holidays@x", "summary": "Holidays", "hidden": True},
+                {"id": "gone@x", "summary": "Old calendar", "deleted": True},
+            ]
+        )
+        self.read(fake)
+        read_ids = [
+            url.split("/calendars/")[1].split("/events")[0] for url in self.event_urls(fake)
+        ]
+        self.assertEqual(read_ids, ["primary"], "a hidden or deleted calendar was read")
+
+    def test_googles_generated_calendars_are_skipped(self):
+        """Holidays and weather are generated, not kept by anyone.
+
+        Found in the first live run: `en.usa#holiday@group.v.calendar.google.com`
+        was among the account's calendars, and in December its all-day entries
+        would fill the ten-line cap with Christmas instead of classes.
+        """
+        fake = FakeGoogle(
+            calendars=[
+                self.PRIMARY,
+                {"id": "en.usa#holiday@group.v.calendar.google.com", "summary": "Holidays in United States"},
+                {"id": "en.usa#weather@group.v.calendar.google.com", "summary": "Weather"},
+                {"id": "classroom1001823676541424300@group.calendar.google.com", "summary": "SAT Course"},
+            ]
+        )
+        payload = self.read(fake)
+        read_ids = [
+            url.split("/calendars/")[1].split("/events")[0] for url in self.event_urls(fake)
+        ]
+        self.assertNotIn("en.usa#holiday@group.v.calendar.google.com", [
+            urllib.parse.unquote(calendar_id) for calendar_id in read_ids
+        ])
+        self.assertEqual(
+            [cal["name"] for cal in payload["calendars"]], ["Primary", "SAT Course"]
+        )
+
+    def test_the_subscription_test_is_by_id_not_by_localised_name(self):
+        self.assertTrue(gcal.is_subscription_calendar("en.usa#holiday@group.v.calendar.google.com"))
+        self.assertTrue(gcal.is_subscription_calendar("de.german#weather@group.v.calendar.google.com"))
+        self.assertFalse(gcal.is_subscription_calendar("classroom1001823676541424300@group.calendar.google.com"))
+        self.assertFalse(gcal.is_subscription_calendar("yojithm22@gmail.com"))
+
+    def test_the_same_event_on_two_calendars_is_shown_once(self):
+        shared = self.event("shared-id", "Chemistry lab", hours=1)
+        fake = FakeGoogle(
+            calendars=[self.PRIMARY, self.WORK],
+            events_by_calendar={
+                "primary": [shared],
+                "work@group.calendar.google.com": [shared],
+            },
+        )
+        payload = self.read(fake)
+        self.assertEqual([event["title"] for event in payload["events"]], ["Chemistry lab"])
+
+    def test_the_total_cap_applies_across_calendars_not_per_calendar(self):
+        fake = FakeGoogle(
+            calendars=[self.PRIMARY, self.WORK],
+            events_by_calendar={
+                "primary": [self.event("p{0}".format(i), "P{0}".format(i), hours=i + 1) for i in range(8)],
+                "work@group.calendar.google.com": [
+                    self.event("w{0}".format(i), "W{0}".format(i), hours=i + 1) for i in range(8)
+                ],
+            },
+        )
+        payload = self.read(fake)
+        self.assertEqual(len(payload["lines"]), gcal.MAX_EVENTS)
+        self.assertTrue(payload["counts"]["more"], "sixteen events were hidden as if there were ten")
+
+    def test_one_broken_calendar_does_not_take_the_week_with_it(self):
+        fake = FakeGoogle(
+            calendars=[self.PRIMARY, self.WORK],
+            events_by_calendar={"primary": [self.event("home", "Seminar", hours=1)]},
+            failing_calendars={"work@group.calendar.google.com"},
+        )
+        payload = self.read(fake)
+
+        self.assertEqual([event["title"] for event in payload["events"]], ["Seminar"])
+        self.assertNotIn("error", payload)
+        self.assertEqual(payload["calendar_errors"][0]["calendar"], "Work")
+        self.assertEqual(payload["calendar_errors"][0]["code"], "refused")
+
+    def test_every_calendar_failing_is_an_error_not_an_empty_week(self):
+        fake = FakeGoogle(
+            calendars=[self.PRIMARY, self.WORK],
+            failing_calendars={"primary", "work@group.calendar.google.com"},
+        )
+        payload = self.read(fake)
+
+        self.assertEqual(payload["events"], [])
+        self.assertEqual(payload["error"]["code"], "refused")
+        self.assertIn("Google refused", payload["error"]["message"])
+
+    def test_a_failed_calendar_list_still_reads_the_primary(self):
+        fake = FakeGoogle(
+            calendar_list_status=403,
+            events=[self.event("home", "Seminar", hours=1)],
+        )
+        payload = self.read(fake)
+
+        self.assertNotIn("error", payload)
+        self.assertEqual(len(payload["lines"]), 1)
+        self.assertEqual([cal["id"] for cal in payload["calendars"]], ["primary"])
+
+    def test_it_stops_after_a_few_calendars(self):
+        fake = FakeGoogle(
+            calendars=[self.PRIMARY]
+            + [{"id": "c{0}@x".format(i), "summary": "C{0}".format(i)} for i in range(12)]
+        )
+        self.read(fake)
+        self.assertLessEqual(len(self.event_urls(fake)), gcal.MAX_CALENDARS)
+
+    def test_the_list_request_asks_only_for_calendars_it_can_read(self):
+        fake = FakeGoogle()
+        self.read(fake)
+        list_url = [url for url in fake.urls if "/calendarList" in url][0]
+        self.assertIn("minAccessRole=reader", list_url)
+        self.assertNotIn("calendar+events", list_url)
 
 
 # --------------------------------------------------------------- the server --
@@ -947,6 +1183,67 @@ class TestTheRoutes(CalendarTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["error"]["code"], "unreachable")
         self.assertEqual(self.log_events("calendar_error")[0]["code"], "unreachable")
+
+
+class TestTheAgentCanReadTheCalendar(CalendarTestCase):
+    """The wiring that was missing when the student asked and got "I don't know".
+
+    The brief could see the calendar from Step 12; the agent could not, because
+    there was no tool for it. These assert the bridge exists and goes through the
+    same read - the same token store, the same demo refusal, and the window the
+    question actually asked for.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.connected()
+        self._original = gcal.section
+        self.seen = []
+        outer = self
+
+        def fake_section(store, *, today, horizon_days=7, transport=None, **kwargs):
+            outer.seen.append(horizon_days)
+            return {
+                "connected": True,
+                "read_only": True,
+                "calendars": [{"id": "primary", "name": "Primary"}],
+                "horizon_days": horizon_days,
+                "events": [
+                    {
+                        "title": "Chemistry lab",
+                        "day": today.isoformat(),
+                        "time": "14:00",
+                        "all_day": False,
+                        "days_away": 0,
+                    }
+                ],
+                "lines": ["today — Chemistry lab (14:00)"],
+                "counts": {"events": 1, "today": 1, "all_day": 0, "more": False},
+                "cost_usd": 0.0,
+                "source": "google-calendar",
+            }
+
+        gcal.section = fake_section
+        self.addCleanup(setattr, gcal, "section", self._original)
+
+    def test_the_agent_tool_reads_the_calendar_and_keeps_the_events(self):
+        result = server._run_tool_for_turn("read_calendar", {})
+        self.assertTrue(result["ok"], result)
+        self.assertIn("Chemistry lab", result["text"])
+        self.assertEqual(result["sources"], [])
+        self.assertEqual(self.seen, [server.BRIEF_HORIZON_DAYS])
+
+    def test_the_question_decides_the_window(self):
+        server._run_tool_for_turn("read_calendar", {"days": 14})
+        self.assertEqual(self.seen, [14])
+
+    def test_the_demo_cannot_read_the_operators_calendar_through_the_tool(self):
+        server.DEMO_MODE = True
+        result = server._run_tool_for_turn("read_calendar", {})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "not_connected")
+        self.assertIn("demo", result["text"].lower())
+        self.assertEqual(self.seen, [], "the demo read the calendar anyway")
 
 
 class TestDemoModeIsNotTheOperatorsCalendar(CalendarTestCase):

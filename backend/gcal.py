@@ -75,6 +75,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -122,7 +123,28 @@ MAX_FETCH = 50
 MAX_EVENTS = 10
 MAX_TITLE_CHARS = 120
 MAX_LOCATION_CHARS = 80
+MAX_CALENDAR_NAME_CHARS = 40
 DEFAULT_HORIZON_DAYS = 7
+
+# Google's own subscription calendars are generated, not owned by anyone: the
+# holiday calendar and the weather one both end in this shape. They were visible
+# in the first live run (`en.usa#holiday@group.v.calendar.google.com`), and at the
+# ten-line cap a December brief would have shown Christmas Eve and Boxing Day
+# instead of the classes happening around them. A holiday is context, not a
+# commitment; the commitments are the calendars a person keeps.
+SUBSCRIPTION_MARKERS = (
+    "#holiday@group.v.calendar.google.com",
+    "#weather@group.v.calendar.google.com",
+)
+
+# A brief that reads every calendar in an account has to stop somewhere. Eight is
+# enough for a student (their own, a course calendar, a shared project, a work
+# one) and small enough that a stray subscription cannot turn one page load into
+# fifty API calls. The primary calendar is kept first, so the cap never drops it.
+MAX_CALENDARS = 8
+# Four at a time: enough that five calendars do not cost five round trips in a
+# row, few enough that a slow one cannot hold the whole brief open.
+CALENDAR_WORKERS = 4
 
 
 class CalendarError(RuntimeError):
@@ -586,15 +608,100 @@ def _clip(text: str, limit: int) -> str:
     return collapsed if len(collapsed) <= limit else collapsed[: limit - 1].rstrip() + "…"
 
 
+def is_subscription_calendar(calendar_id: str) -> bool:
+    """Is this one of Google's generated calendars rather than a person's?
+
+    Checked by id suffix rather than by name, because the name is localised
+    ("Holidays in United States", "Feiertage in Deutschland") and the id is not.
+    """
+    lowered = str(calendar_id or "").lower()
+    return any(marker in lowered for marker in SUBSCRIPTION_MARKERS)
+
+
+def list_calendars(
+    access_token: str,
+    *,
+    transport: Optional[Transport] = None,
+) -> List[dict]:
+    """Every calendar this account can read, primary first. -> [{"id", "name"}].
+
+    The brief used to read `calendars/primary` and nothing else, which is a
+    defensible first version and a wrong answer for anyone whose week lives on a
+    second calendar: a course calendar, a shared project, the calendar a school
+    account shares with them. Google has no "events from all calendars" endpoint,
+    so the list has to be walked one calendar at a time - which is why this costs
+    one extra request and is capped.
+
+    Hidden and deleted calendars are skipped: Google keeps both in this list, and
+    `hidden` is the student having unchecked it, which is a preference rather than
+    an accident. Google's own generated subscription calendars are skipped too -
+    see `SUBSCRIPTION_MARKERS`. A failure here returns just the primary calendar,
+    because reading one calendar beats reading none - and if the failure is a dead
+    token, the events call right after it reports that properly.
+    """
+    query = urllib.parse.urlencode(
+        {
+            # Google's own ceiling; the cap that matters is applied below.
+            "maxResults": "250",
+            "minAccessRole": "reader",
+            "fields": "items(id,summary,primary,hidden,deleted,accessRole)",
+        }
+    )
+    url = "{0}/users/me/calendarList?{1}".format(API_BASE, query)
+    try:
+        status, text = _call(
+            "GET",
+            url,
+            headers={"Authorization": "Bearer {0}".format(access_token)},
+            transport=transport,
+        )
+        payload = _json_or_error(status, text, what="listing your calendars")
+    except CalendarError:
+        return [{"id": CALENDAR_ID, "name": "Primary"}]
+
+    items = payload.get("items")
+    if not isinstance(items, list):
+        items = []
+
+    calendars: List[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("deleted") or item.get("hidden"):
+            continue
+        calendar_id = str(item.get("id") or "").strip()
+        if not calendar_id or is_subscription_calendar(calendar_id):
+            continue
+        calendars.append(
+            {
+                "id": calendar_id,
+                "name": _clip(str(item.get("summary") or ""), MAX_CALENDAR_NAME_CHARS)
+                or calendar_id,
+                "primary": bool(item.get("primary")),
+            }
+        )
+
+    if not calendars:
+        return [{"id": CALENDAR_ID, "name": "Primary"}]
+
+    # Primary first, then the rest by name: the order is what decides which
+    # calendar wins a duplicate and which one falls off the cap, so it cannot be
+    # whatever order Google happened to return.
+    calendars.sort(key=lambda cal: (not cal.get("primary"), cal["name"].lower()))
+    capped = calendars[:MAX_CALENDARS]
+    return [{"id": cal["id"], "name": cal["name"]} for cal in capped]
+
+
 def fetch_events(
     access_token: str,
     *,
+    calendar_id: str = CALENDAR_ID,
     now: Optional[datetime] = None,
     horizon_days: int = DEFAULT_HORIZON_DAYS,
     max_results: int = MAX_FETCH,
     transport: Optional[Transport] = None,
 ) -> Tuple[List[dict], bool]:
-    """One page of the primary calendar's events. -> (items, more_beyond_this_page).
+    """One page of one calendar's events. -> (items, more_beyond_this_page).
 
     The window is **now → now + horizon**, and the two bounds are not symmetric:
     Google documents `timeMin` as an exclusive lower bound on an event's *end*
@@ -620,7 +727,9 @@ def fetch_events(
             "maxResults": str(max(1, int(max_results))),
         }
     )
-    url = "{0}/calendars/{1}/events?{2}".format(API_BASE, CALENDAR_ID, query)
+    url = "{0}/calendars/{1}/events?{2}".format(
+        API_BASE, urllib.parse.quote(str(calendar_id or CALENDAR_ID), safe=""), query
+    )
     status, text = _call(
         "GET",
         url,
@@ -632,6 +741,80 @@ def fetch_events(
     if not isinstance(items, list):
         items = []
     return items, bool(payload.get("nextPageToken"))
+
+
+def fetch_from_calendars(
+    access_token: str,
+    calendars: Sequence[dict],
+    *,
+    today: date,
+    now: Optional[datetime] = None,
+    horizon_days: int = DEFAULT_HORIZON_DAYS,
+    transport: Optional[Transport] = None,
+) -> Tuple[List[dict], bool, List[dict]]:
+    """Merge every calendar into one ordered list. -> (events, more, failures).
+
+    One request per calendar, four at a time. Two decisions worth naming:
+
+    * **A failing calendar does not empty the brief.** A shared calendar that was
+      unshared, or one Google answers 403 for, is reported as a failure and
+      skipped - the student still sees the rest of their week. Only `reconnect`
+      (a dead token) aborts, because then every calendar would fail the same way.
+    * **Duplicates are dropped by event id.** An event on a shared calendar can be
+      visible from both sides, and "Chemistry lab" twice in one brief reads like a
+      bug. The first calendar in the list wins, which is why the list is ordered
+      primary-first rather than in Google's return order.
+
+    Each event carries its calendar's display name, so a line can say where it
+    came from when more than one calendar contributed.
+    """
+    moment = now
+
+    def one(calendar: dict):
+        try:
+            items, more = fetch_events(
+                access_token,
+                calendar_id=calendar["id"],
+                now=moment,
+                horizon_days=horizon_days,
+                transport=transport,
+            )
+            return calendar, items, more, None
+        except CalendarError as exc:
+            if exc.code == "reconnect":
+                raise
+            return calendar, [], False, {
+                "calendar": calendar["name"],
+                "code": exc.code,
+                "message": str(exc),
+            }
+
+    ordered = list(calendars) or [{"id": CALENDAR_ID, "name": "Primary"}]
+    results = []
+    with ThreadPoolExecutor(max_workers=min(CALENDAR_WORKERS, len(ordered))) as pool:
+        # `map` keeps the input order, which is what the duplicate rule depends on.
+        for result in pool.map(one, ordered):
+            results.append(result)
+
+    events: List[dict] = []
+    failures: List[dict] = []
+    more = False
+    seen = set()
+    for calendar, items, page_more, failure in results:
+        if failure:
+            failures.append(failure)
+            continue
+        more = more or page_more
+        for event in parse_events(items, today=today, now=moment):
+            if event["id"]:
+                if event["id"] in seen:
+                    continue
+                seen.add(event["id"])
+            event["calendar"] = calendar["name"]
+            events.append(event)
+
+    events.sort(key=lambda event: (event["_start"], event["title"]))
+    return events, more, failures
 
 
 def parse_events(
@@ -713,16 +896,21 @@ def parse_events(
 # ----------------------------------------------------------- the brief part ---
 
 
-def _phrase(event: dict) -> str:
+def _phrase(event: dict, show_source: bool = False) -> str:
     """One line about one event, in the brief's voice.
 
     Composed here rather than by a model, for the same reason the deadline lines
     are: this text has to be true, and "in 3 days" is arithmetic.
+
+    `show_source` appends the calendar a line came from, and is only set when more
+    than one calendar contributed - with a single calendar the suffix would be
+    noise repeated down the list.
     """
     away = int(event.get("days_away") or 0)
+    source = " · {0}".format(event["calendar"]) if show_source and event.get("calendar") else ""
     if event.get("ongoing"):
         detail = " (until {0})".format(event["end_time"]) if event.get("end_time") else ""
-        return "now — {0}{1}".format(event["title"], detail)
+        return "now — {0}{1}{2}".format(event["title"], detail, source)
     if away <= 0:
         lead = "today"
     elif away == 1:
@@ -738,7 +926,7 @@ def _phrase(event: dict) -> str:
     if event.get("location"):
         bits.append(event["location"])
     detail = " ({0})".format(", ".join(bits)) if bits else ""
-    return "{0} — {1}{2}".format(lead, event["title"], detail)
+    return "{0} — {1}{2}{3}".format(lead, event["title"], detail, source)
 
 
 def compose(
@@ -747,6 +935,7 @@ def compose(
     today: date,
     horizon_days: int = DEFAULT_HORIZON_DAYS,
     more: bool = False,
+    calendars: Optional[Sequence[dict]] = None,
 ) -> dict:
     """The calendar half of the brief, as JSON-ready data.
 
@@ -756,18 +945,27 @@ def compose(
     """
     soon = [event for event in events if abs(int(event.get("days_away") or 0)) <= horizon_days]
     shown = soon[:MAX_EVENTS]
+    sources = [
+        {"id": str(cal.get("id") or ""), "name": str(cal.get("name") or "")}
+        for cal in (calendars or [])
+        if isinstance(cal, dict)
+    ]
+    show_source = len(sources) > 1
     return {
         "connected": True,
         "read_only": True,
         "scope": SCOPE,
         "scope_summary": SCOPE_SUMMARY,
+        # Kept for the panel and the tests that predate reading more than one;
+        # `calendars` is the answer to "where did these lines come from".
         "calendar": CALENDAR_ID,
+        "calendars": sources,
         "horizon_days": int(horizon_days),
         "events": [
             {key: value for key, value in event.items() if not key.startswith("_")}
             for event in shown
         ],
-        "lines": [_phrase(event) for event in shown],
+        "lines": [_phrase(event, show_source=show_source) for event in shown],
         "counts": {
             "events": len(shown),
             "today": len([event for event in shown if int(event.get("days_away") or 0) <= 0]),
@@ -851,8 +1049,10 @@ def section(
        says so, because a request we know cannot succeed should not be made.
     2. **Not connected** -> no network call either. This is the common case for
        anyone who has not asked for a calendar, and it must cost nothing.
-    3. **Connected** -> one read, cached for a minute, and any failure becomes a
-       sentence plus a log code rather than an exception in the brief.
+    3. **Connected** -> a list request and one events request per calendar, four
+       at a time, cached for a minute. A calendar that fails is skipped and
+       reported; only an all-calendars failure or a dead token becomes the
+       payload's `error`.
 
     A dead refresh token (`invalid_grant`) clears the stored tokens and answers
     `reconnect`: keeping a credential Google has already rejected would turn a
@@ -865,7 +1065,7 @@ def section(
     if not tokens.get("refresh_token"):
         return not_connected_payload(configured_now=True)
 
-    key = "calendar:{0}:{1}".format(CALENDAR_ID, int(horizon_days))
+    key = "calendar:all:{0}".format(int(horizon_days))
     if use_cache:
         hit = cached(key)
         if hit is not None:
@@ -873,9 +1073,23 @@ def section(
 
     try:
         access = store.access_token(transport=transport)
-        items, more = fetch_events(
-            access, now=now, horizon_days=horizon_days, transport=transport
+        # One list request, then one per calendar. The list is allowed to fail
+        # quietly back to the primary calendar; the events are not, because that
+        # is where a dead token surfaces.
+        calendars = list_calendars(access, transport=transport)
+        events, more, failures = fetch_from_calendars(
+            access,
+            calendars,
+            today=today,
+            now=now,
+            horizon_days=horizon_days,
+            transport=transport,
         )
+        # Every calendar failing is not a partial week, it is no calendar at all -
+        # and an empty list would read as "your week is free", which is the one
+        # wrong answer worth going out of the way to avoid.
+        if failures and len(failures) >= len(calendars):
+            raise CalendarError(failures[0]["message"], failures[0]["code"])
     except CalendarError as exc:
         if exc.code == "reconnect":
             store.clear()
@@ -901,9 +1115,15 @@ def section(
         }
 
     payload = compose(
-        parse_events(items, today=today, now=now),
+        events,
         today=today,
         horizon_days=horizon_days,
         more=more,
+        calendars=calendars,
     )
+    if failures:
+        # Said out loud rather than swallowed: a week that is missing a shared
+        # calendar's events looks the same as a free week, and one of those is a
+        # reason to check something.
+        payload["calendar_errors"] = failures
     return remember(key, payload) if use_cache else payload

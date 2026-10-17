@@ -3,6 +3,7 @@ import { MAX_TURNS_IN_VIEW } from './config.js'
 import {
   getRecognition,
   speak,
+  speakHosted,
   speechToTextSupported,
   stopSpeaking,
   textToSpeechSupported,
@@ -145,6 +146,10 @@ export default function SidePanel() {
   // line is populated before the first question rather than after it.
   const [spend, setSpend] = useState(null)
   const [session, setSession] = useState(null)
+  // How replies are going to be read, from the backend's own answer (Step 13).
+  // Null until /health arrives: an unknown voice is the local one, because the
+  // alternative is asking a backend for audio it may never have promised.
+  const [voice, setVoice] = useState(null)
   // Typing instead of talking. The panel was voice-only, which quietly made it
   // useless to anyone without a microphone - and `audio-capture` is an error
   // Chrome already reports, so "no mic" was a case the code knew about and had
@@ -175,6 +180,7 @@ export default function SidePanel() {
         // The cost display starts here, not after the first turn: what the
         // backend has already spent is a fact about it, not about this question.
         if (info?.spend) setSpend(info.spend)
+        if (info?.voice) setVoice(info.voice)
         if (info?.demo?.on) {
           setSession({
             demo: true,
@@ -194,6 +200,47 @@ export default function SidePanel() {
    * a confirmed action updates the cost line and the quiz state exactly like an
    * ordinary reply, because it is one.
    */
+  // Which voice answers, decided by the backend rather than guessed at here.
+  // `available` is false with no key, in demo mode, and for a backend too old to
+  // know about voice at all - and in every one of those cases Chrome's voice is
+  // the honest answer rather than a request that can only fail.
+  const voiceOn = Boolean(voice?.available)
+
+  /**
+   * Say something, with whichever voice is in play.
+   *
+   * One function so every reply is spoken the same way: the ordinary turn, the
+   * confirmed action, and "Speak again" all went straight to `speak` before, and
+   * three call sites remembering to try the hosted voice first is three chances
+   * to forget. The text is stripped of citation markers here too, because out
+   * loud there is nothing to point at.
+   */
+  const say = useCallback(
+    (text) => {
+      const spoken = withoutCitations(text)
+      if (voiceOn) {
+        setStatus('speaking')
+        speakHosted(spoken, {
+          onEnd: () => setStatus('idle'),
+          onNotice: (kind, err) => {
+            if (kind === 'truncated') {
+              setNotice('That reply was long, so Cadence read the first part aloud.')
+            } else if (err) {
+              // The local voice has already taken over; what the student cannot
+              // see is *why* it suddenly sounds different. The backend's own
+              // sentence names the cause (credits, rate limit, bad key).
+              setNotice(err.message)
+            }
+          },
+        })
+        return
+      }
+      if (speak(spoken, { onEnd: () => setStatus('idle') })) setStatus('speaking')
+      else setStatus('idle')
+    },
+    [voiceOn],
+  )
+
   const showReply = useCallback((data, extraMeta) => {
     setTurns((prev) =>
       [
@@ -207,14 +254,8 @@ export default function SidePanel() {
     setQuiz(data.quiz ?? null)
     if (data.spend) setSpend(data.spend)
     if (data.session) setSession(data.session)
-    // Spoken without the citation markers: they point at links on screen, and
-    // "[1]" read aloud mid-sentence is noise the student has to filter out.
-    if (speak(withoutCitations(data.reply), { onEnd: () => setStatus('idle') })) {
-      setStatus('speaking')
-    } else {
-      setStatus('idle')
-    }
-  }, [])
+    say(data.reply)
+  }, [say])
 
   const runTurn = useCallback(async (text) => {
     setStatus('thinking')
@@ -807,11 +848,13 @@ export default function SidePanel() {
           )}
           <button
             type="button"
-            disabled={!lastReply || !textToSpeechSupported()}
-            onClick={() =>
-              lastReply &&
-              speak(lastReply.text, { onEnd: () => setStatus('idle') })
+            disabled={!lastReply || !(voiceOn || textToSpeechSupported())}
+            title={
+              voiceOn
+                ? 'Read the last reply again. Repeated words come from the cache, so they cost nothing.'
+                : 'Read the last reply again with Chrome’s own voice.'
             }
+            onClick={() => lastReply && say(lastReply.text)}
           >
             Speak again
           </button>

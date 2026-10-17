@@ -342,11 +342,111 @@ class RunToolTests(unittest.TestCase):
         self.assertNotIn(" ", result["reason"])
 
 
+class CalendarToolTests(unittest.TestCase):
+    """The tool the student's "what's on my calendar" question needed.
+
+    The prompt used to have no calendar tool at all, so the honest answer was "I
+    can't see your calendar" - which is exactly what a student reads as broken.
+    These tests are about the seam, not about Google: `section` is injected, so
+    what is checked here is the text the model is handed.
+    """
+
+    EVENTS = [
+        {
+            "title": "Chemistry lab",
+            "day": "2026-10-20",
+            "time": "14:00",
+            "all_day": False,
+            "days_away": 3,
+        },
+        {
+            "title": "Seminar",
+            "day": "2026-10-21",
+            "time": "09:00",
+            "all_day": False,
+            "days_away": 4,
+        },
+    ]
+
+    def section(self, **overrides):
+        payload = {
+            "connected": True,
+            "calendars": [{"id": "primary", "name": "Primary"}],
+            "events": list(self.EVENTS),
+            "lines": ["in 3 days — Chemistry lab (14:00)", "in 4 days — Seminar (09:00)"],
+            "counts": {"events": 2, "today": 0, "all_day": 0, "more": False},
+        }
+        payload.update(overrides)
+        calls = []
+
+        def fake(days):
+            calls.append(days)
+            return payload
+
+        fake.calls = calls
+        return fake
+
+    def test_it_returns_the_events_with_the_window_that_was_asked_for(self):
+        section = self.section()
+        result = run_tool("read_calendar", {"days": 14}, calendar=section)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(section.calls, [14])
+        self.assertIn("Chemistry lab", result["text"])
+        self.assertIn("2026-10-20", result["text"])
+        self.assertEqual(result["sources"], [])
+
+    def test_the_default_window_is_one_week(self):
+        section = self.section()
+        run_tool("read_calendar", {}, calendar=section)
+        self.assertEqual(section.calls, [7])
+
+    def test_an_empty_calendar_says_so_instead_of_nothing(self):
+        section = self.section(events=[], lines=[], counts={"events": 0, "today": 0, "all_day": 0, "more": False})
+        result = run_tool("read_calendar", {}, calendar=section)
+        self.assertTrue(result["ok"])
+        self.assertIn("Nothing is scheduled", result["text"])
+        # The lesson from the reply that started this: "I don't know" is not an
+        # answer about a calendar that was read and is empty.
+        self.assertIn("empty for that window", result["text"])
+
+    def test_a_calendar_that_is_not_connected_is_a_result_not_a_crash(self):
+        section = self.section(connected=False, explanation="Google Calendar is not connected yet.")
+        result = run_tool("read_calendar", {}, calendar=section)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "not_connected")
+        self.assertIn("not connected", result["text"])
+
+    def test_a_window_outside_the_range_is_refused_before_anything_is_read(self):
+        for days in (0, 31, -7, "soon", 2.5):
+            with self.subTest(days=days):
+                section = self.section()
+                result = run_tool("read_calendar", {"days": days}, calendar=section)
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["reason"], "bad_args")
+                self.assertEqual(section.calls, [])
+
+    def test_without_a_calendar_attached_the_tool_says_so(self):
+        result = run_tool("read_calendar", {})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "no_calendar")
+
+    def test_a_truncated_list_is_reported_as_truncated(self):
+        section = self.section(counts={"events": 2, "today": 0, "all_day": 0, "more": True})
+        result = run_tool("read_calendar", {}, calendar=section)
+        self.assertIn("more events", result["text"])
+
+    def test_the_card_tells_the_model_to_call_it_first(self):
+        card = [c for c in tool_cards() if c["name"] == "read_calendar"][0]
+        self.assertIn("Never say you cannot see their calendar", card["when"])
+        self.assertIn("never state an event that is not in the result", card["when"])
+
+
 class ToolCardTests(unittest.TestCase):
     def test_the_cards_and_the_handlers_are_the_same_set(self):
         self.assertEqual(tuple(card["name"] for card in tool_cards()), TOOL_NAMES)
         self.assertEqual(
-            sorted(TOOL_NAMES), ["calculate", "propose_skill", "web_search"]
+            sorted(TOOL_NAMES),
+            ["calculate", "propose_skill", "read_calendar", "web_search"],
         )
 
     def test_the_skill_card_says_it_does_not_save(self):

@@ -155,6 +155,53 @@ export function checkHealth(signal) {
 }
 
 /**
+ * Ask the backend to say this reply, and get audio back.
+ *
+ * Not a `request()` call: that helper parses JSON, and a successful answer here
+ * *is* an MP3. The key that makes this expensive lives on the backend, so this is
+ * the only way the panel can have a better voice than Chrome's own - and the
+ * reason a failure is thrown rather than swallowed is that the caller has a real
+ * fallback to take (`speech.js` speaks it locally instead).
+ *
+ * Returns { blob, chars, truncated, cached }. `truncated` means the backend spoke
+ * only the first part of a long reply, and saying so is the difference between a
+ * feature and a lie. `cached` means this audio cost nothing because the same words
+ * were spoken a moment ago.
+ */
+export async function speakReply(text, signal) {
+  let response
+  try {
+    response = await fetch(`${BACKEND_URL}/speak`, {
+      method: 'POST',
+      headers: headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ text: String(text ?? '') }),
+      signal,
+    })
+  } catch (cause) {
+    throw new BackendUnreachableError(cause)
+  }
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    let message = detail
+    try {
+      message = JSON.parse(detail).error ?? detail
+    } catch {
+      /* not JSON, use the raw body */
+    }
+    throw new Error(String(message || `Backend returned ${response.status}`).slice(0, 200))
+  }
+
+  const blob = await response.blob()
+  return {
+    blob,
+    chars: Number(response.headers.get('X-Cadence-Spoken-Chars') || 0),
+    truncated: response.headers.get('X-Cadence-Spoken-Truncated') === '1',
+    cached: response.headers.get('X-Cadence-Spoken-Cached') === '1',
+  }
+}
+
+/**
  * Answer a question the backend asked: a go-ahead, or a refusal.
  *
  * Sent as its own request rather than as the next utterance, because that is what
