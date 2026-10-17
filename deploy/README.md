@@ -426,6 +426,12 @@ nebius ai endpoint delete "$ENDPOINT_ID"    # billing stops
   running with **no gate on the API** for as long as it is up. The `/demo` page
   itself is behind the token like every other route, which is what stops you
   accidentally serving someone's real memory at a public URL.
+- **The calendar cannot be *connected* on a deploy.** Step 12's consent flow uses
+  Google's loopback redirect (`http://127.0.0.1:<port>`), so it only completes on
+  the machine running the backend. A VM can hold a token that was connected
+  locally — copy `data/google-token.json` and set the same `GOOGLE_CLIENT_ID` — but
+  there is no way to press Connect against a remote host, and the calendar is off
+  on the demo by design (a public demo must not show the operator's own week).
 - **No secret manager integration.** The key is an env var on the host. That is a
   real limitation worth naming rather than hiding.
 - **No autoscaling, and the cap is not a defence.** The per-session request cap

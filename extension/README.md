@@ -65,7 +65,18 @@ Leave both unset and everything behaves exactly as it did before Step 7.
 **Today** is the voice loop, with the **brief** at the top: what is due, how
 soon, the weak topics you named, and whether a quiz is open — composed by the
 backend in code from your own files, so it costs nothing and nothing in it was
-invented by a model. The meta line under each reply tells you what the turn
+invented by a model. Under those deadlines is a **From your calendar** section:
+events read live from Google Calendar, one line each, read-only — or a **Connect
+Google Calendar** link until you connect it. Setup is in the [repo
+README](../README.md#let-cadence-see-your-calendar).
+
+Ask *"what's due this week"* or *"when is my next deadline?"* and the answer comes
+from your own files **in code**: no model call, no cost, and the same date the
+brief above it shows — the chip on the meta line reads `brief` in the grey
+server-chosen style, like `quiz`. A request that asks for work rather than a date
+(*"plan my week, I have six hours"*) still goes to the skill that does the work.
+
+The meta line under each reply tells you what the turn
 actually did, including the tools it ran: `general · 4443ms · $0.000986 · super ·
 calculate · 3 steps`, or `web_search (failed)` when the search could not run.
 That line is the honest half of the feature — a plan that checked nothing says
@@ -127,6 +138,45 @@ yet` instead of a 0% that would be a lie.
 If the badge in the header says `backend: offline`, the backend isn't running —
 start it and reload the panel. When it's healthy it shows the backend's mode:
 `backend: router`.
+
+## No microphone? Type instead
+
+The mic needs Chrome's speech recognition, which is missing on some builds, and it
+needs a microphone you have actually granted. Neither is a reason to be stuck, so
+there are three ways into the same text box:
+
+1. **Press Type instead** — the button sits beside the mic and opens a normal
+   input with an **Ask** button.
+2. **It opens by itself** when the browser has no speech recognition, or when
+   Chrome reports `audio-capture` / `not-allowed`. The status line says *Type your
+   question below*, and a note explains why the mic is not there.
+3. **Enter sends.** The box is a real `<form>`, so the keyboard works and Shift
+   does not need to be hunted for a newline.
+
+A typed question is the same turn as a spoken one: same endpoint, same router,
+same reply, and it is still spoken back if you have speech synthesis. The box is
+capped at 2,000 characters, which is the backend's own `MAX_TRANSCRIPT_CHARS` —
+not a smaller number invented here.
+
+## Connecting your calendar
+
+The brief has a calendar half once you connect one, and the connection is **one
+permission**: `calendar.readonly`. The Connect link opens the backend's own
+`/oauth/google/start` in a new tab, which sends you to Google and then back to
+`http://127.0.0.1:8787` — the loopback redirect Google documents for a desktop
+client. The page you land on says whether it worked and what was granted.
+
+Three states are worth knowing apart, because they look similar:
+
+- **no Connect link, just a sentence** — the backend has no `GOOGLE_CLIENT_ID`, so
+  a connect cannot work and the panel says what to set instead of offering a
+  button that would fail;
+- **Connect Google Calendar** — configured, not connected yet;
+- **From your calendar** — connected. If a read fails, the error appears under the
+  section and the deadlines above it are untouched.
+
+If the consent screen answers *access_denied*, the usual cause is an OAuth app in
+*testing* mode that does not list your Google account under **Test users**.
 
 ## The quiz loop
 
@@ -226,6 +276,10 @@ background reader: closing the panel stops it entirely.
   quiz is still open, live in `progress/*.md` on the backend. Closing the panel
   mid-quiz loses nothing: reopen it, or ask *"how am I doing"*, and the loop picks
   up where it was.
+- **No calendar writes, and no reminders.** The panel shows what is on your
+  calendar; nothing in the extension or the backend can create, move or delete an
+  event, because the token it holds cannot. It also does not push a notification
+  when something is about to start — the calendar section is a brief you open.
 - **No memory editing in the UI.** You can delete a note from the Memory tab, but
   adding or rewriting one means asking the assistant or editing the file. The
   file editing is the point, so this may stay that way.

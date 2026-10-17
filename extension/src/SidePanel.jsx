@@ -78,14 +78,50 @@ function citedText(text, sources) {
 
 // What each SpeechRecognition error actually means to a human, since the raw
 // codes ("not-allowed", "no-speech") are useless in a UI.
+//
+// `not-allowed` is deliberately absent: it is the one error whose *remedy* is a
+// place, not a sentence, so it renders as the help block below with the real
+// extension ID in the URL. The text that used to be here said "click the mic
+// icon in Chrome's address bar" - which is wrong for the panel this code runs
+// in. A side panel has no address bar, so that instruction could not be
+// followed and the student was left with a dead end and a stop sign.
 const RECOGNITION_ERRORS = {
-  'not-allowed':
-    'Microphone access was blocked. Click the mic icon in Chrome’s address bar and allow it.',
   'service-not-allowed': 'Chrome’s speech service refused the request.',
   'no-speech': 'I didn’t catch that. Try again a little closer to the mic.',
   'audio-capture': 'No microphone was found.',
   network: 'Speech recognition needs a network connection.',
   aborted: 'Listening stopped.',
+}
+
+/**
+ * Where the microphone exception for *this* extension actually lives.
+ *
+ * Chrome keeps a media permission per origin, and an extension's origin is
+ * `chrome-extension://<id>` - an ID we only know at runtime. The site-details
+ * URL takes it as a query parameter, which is what makes this link-able
+ * instead of a scavenger hunt through chrome://settings.
+ *
+ * Returns '' outside an extension (the demo page), where the generic settings
+ * page is the honest answer instead.
+ */
+export function micSettingsUrl() {
+  try {
+    const id = globalThis.chrome?.runtime?.id
+    if (!id) return ''
+    const origin = `chrome-extension://${id}`
+    return `chrome://settings/content/siteDetails?site=${encodeURIComponent(origin)}`
+  } catch {
+    return ''
+  }
+}
+
+/** The side panel's own page, addressable as a normal tab. */
+export function panelPageUrl() {
+  try {
+    return globalThis.chrome?.runtime?.getURL?.('sidepanel.html') || ''
+  } catch {
+    return ''
+  }
 }
 
 export default function SidePanel() {
@@ -109,6 +145,17 @@ export default function SidePanel() {
   // line is populated before the first question rather than after it.
   const [spend, setSpend] = useState(null)
   const [session, setSession] = useState(null)
+  // Typing instead of talking. The panel was voice-only, which quietly made it
+  // useless to anyone without a microphone - and `audio-capture` is an error
+  // Chrome already reports, so "no mic" was a case the code knew about and had
+  // no answer for. The box opens by itself when recognition is missing or the
+  // mic is refused, and the button beside the mic opens it on demand.
+  const [typed, setTyped] = useState('')
+  const [typedOpen, setTypedOpen] = useState(false)
+  // Blocked microphone. Resolved at the moment Chrome says no, because the ID
+  // in the settings URL only exists inside the extension.
+  const [micBlocked, setMicBlocked] = useState(false)
+  const [micCopied, setMicCopied] = useState(false)
 
   const recognitionRef = useRef(null)
   // The previous reply, needed by "say that more simply". A ref, because
@@ -292,6 +339,10 @@ export default function SidePanel() {
       setStatus('listening')
       setInterim('')
       setError('')
+      // The mic works now, so whatever the student changed, it changed. Keeping
+      // the help block up after a successful listen would be a stale complaint.
+      setMicBlocked(false)
+      setMicCopied(false)
     }
 
     recognition.onresult = (event) => {
@@ -312,7 +363,23 @@ export default function SidePanel() {
     }
 
     recognition.onerror = (event) => {
-      setError(RECOGNITION_ERRORS[event.error] || `Speech recognition error: ${event.error}`)
+      if (event.error === 'not-allowed') {
+        // A blocked permission is not an error message, it is a setting that has
+        // to be changed somewhere. The help block below says where that is and how
+        // to get there; the plain error line stays empty so the two do not compete.
+        setMicBlocked(true)
+        setError('')
+        setTypedOpen(true)
+      } else {
+        setError(
+          RECOGNITION_ERRORS[event.error] || `Speech recognition error: ${event.error}`,
+        )
+      }
+      if (event.error === 'audio-capture') {
+        // No input device at all. Nothing to allow, so no help block - the box
+        // is the whole remedy.
+        setTypedOpen(true)
+      }
       if (event.error === 'no-speech' || event.error === 'aborted') {
         setStatus('idle')
         setInterim('')
@@ -335,6 +402,35 @@ export default function SidePanel() {
     }
   }, [])
 
+  /**
+   * The two things a blocked mic needs: the exact settings URL, and a way to get
+   * Chrome to ask again.
+   *
+   * The link is *copied* rather than opened, because Chrome refuses
+   * extension-initiated navigation to its own chrome:// pages - a button that
+   * silently did nothing would be a second dead end in place of the first. The
+   * second button opens the panel's own page in a normal tab, which is where a
+   * media prompt is shown the way most people have seen one.
+   */
+  async function copyMicLink() {
+    try {
+      await navigator.clipboard.writeText(micSettingsUrl())
+      setMicCopied(true)
+    } catch {
+      // Clipboard access refused. The URL is on screen and selectable anyway.
+      setMicCopied(false)
+    }
+  }
+
+  function openPanelInTab() {
+    try {
+      const url = panelPageUrl()
+      if (url) globalThis.chrome.tabs.create({ url })
+    } catch {
+      // Not running as an extension: there is no page to open.
+    }
+  }
+
   function onMicClick() {
     if (status === 'listening') {
       recognitionRef.current?.stop()
@@ -350,7 +446,27 @@ export default function SidePanel() {
     startListening()
   }
 
+  /**
+   * Send what was typed. Goes through `runTurnRef` for the same reason the mic
+   * callbacks do: this effect-free path must not close over a stale turn, and a
+   * typed question is otherwise the identical journey a spoken one takes.
+   */
+  const submitTyped = useCallback(() => {
+    const text = typed.trim()
+    if (!text || status === 'thinking') return
+    setTyped('')
+    runTurnRef.current(text)
+  }, [typed, status])
+
   const lastReply = [...turns].reverse().find((t) => t.role === 'cadence')
+  // Resolved per render, not at import: `speech.js` looks these up at call time
+  // so the panel can be driven on a browser without a microphone.
+  const canTalk = speechToTextSupported()
+  const showTyped = typedOpen || !canTalk
+  // Resolved only while the help block is on screen, so a plain web page never
+  // computes a chrome-extension URL it cannot have.
+  const micUrl = micBlocked ? micSettingsUrl() : ''
+  const panelUrl = micBlocked ? panelPageUrl() : ''
 
   return (
     <div className={`panel status-${status}`}>
@@ -568,13 +684,72 @@ export default function SidePanel() {
       {tab === 'today' && error && <p className="error">{error}</p>}
       {tab === 'today' && !error && notice && <p className="notice">{notice}</p>}
 
-      {tab === 'today' && !speechToTextSupported() && (
-        <p className="error">
-          No speech recognition in this browser, so the mic won’t work here.
+      {/*
+        A blocked microphone, answered with the fix rather than a description of
+        it. Two things this panel knows that a generic error cannot: the
+        extension's own origin (so the settings URL is exact), and the fact that
+        it is a side panel - which is why "click the icon in the address bar" was
+        an instruction nobody could follow here.
+
+        Nothing here blocks typing: the box is already open by the time this is
+        read, because a blocked mic is not a broken app.
+      */}
+      {tab === 'today' && micBlocked && (
+        <div className="notice mic-help">
+          <p>
+            <strong>Chrome is blocking Cadence’s microphone.</strong> A side panel
+            has no address bar, so the switch is on Cadence’s own page in
+            Chrome’s settings — not on the extension’s Details page.
+          </p>
+
+          {micUrl ? (
+            <>
+              <p className="mic-url">{micUrl}</p>
+              <div className="mic-actions">
+                <button type="button" onClick={copyMicLink}>
+                  {micCopied ? 'Copied ✓' : 'Copy this link'}
+                </button>
+                {panelUrl ? (
+                  <button type="button" onClick={openPanelInTab}>
+                    Open Cadence in a tab
+                  </button>
+                ) : null}
+              </div>
+              <p className="mic-steps">
+                Paste it into a new tab → set <strong>Microphone</strong> to{' '}
+                <strong>Allow</strong> → then click the mic again here.
+              </p>
+            </>
+          ) : (
+            <p className="mic-steps">
+              Open <code>chrome://settings/content/microphone</code> and allow
+              Cadence.
+            </p>
+          )}
+
+          <p className="mic-steps">
+            On a Mac also check <strong>System Settings → Privacy &amp; Security →
+            Microphone → Google Chrome</strong>, and let macOS quit and reopen
+            Chrome if it asks — a grant there can need a fresh Chrome to take
+            effect.
+          </p>
+          <p className="mic-steps">
+            Typing needs no permission at all, so the box below already works.
+          </p>
+        </div>
+      )}
+
+      {tab === 'today' && !canTalk && (
+        // A notice, not an error: nothing is broken, there is just no mic in
+        // this browser - and the box below is the whole remedy.
+        <p className="notice">
+          No speech recognition in this browser, so there’s no mic here. Type
+          below instead.
         </p>
       )}
 
       <footer className="controls" hidden={tab !== 'today'}>
+        {canTalk && (
         <button
           type="button"
           className="mic"
@@ -595,8 +770,11 @@ export default function SidePanel() {
             />
           </svg>
         </button>
+        )}
 
-        <p className="status-text">{STATUS_TEXT[status]}</p>
+        <p className="status-text">
+          {!canTalk && status === 'idle' ? 'Type your question below' : STATUS_TEXT[status]}
+        </p>
 
         <div className="secondary">
           <button
@@ -613,6 +791,20 @@ export default function SidePanel() {
           >
             {pageArmed ? 'Reading this page ✓' : 'Read this page'}
           </button>
+          {canTalk && (
+            <button
+              type="button"
+              aria-pressed={typedOpen}
+              title={
+                typedOpen
+                  ? 'Hide the text box and go back to talking.'
+                  : 'No microphone, or you would rather not talk? Type the question instead.'
+              }
+              onClick={() => setTypedOpen((prev) => !prev)}
+            >
+              {typedOpen ? 'Hide typing' : 'Type instead'}
+            </button>
+          )}
           <button
             type="button"
             disabled={!lastReply || !textToSpeechSupported()}
@@ -641,6 +833,39 @@ export default function SidePanel() {
             Clear
           </button>
         </div>
+
+        {/* The typed question. A form rather than a bare input so Enter sends
+            it with no key handling of our own. `maxLength` matches the
+            backend's own MAX_TRANSCRIPT_CHARS: the server truncates at 2000
+            rather than refusing, so the box stops at the same place instead of
+            letting a student paste something the far end will silently cut. */}
+        {showTyped && (
+          <form
+            className="typed"
+            onSubmit={(event) => {
+              event.preventDefault()
+              submitTyped()
+            }}
+          >
+            <input
+              type="text"
+              value={typed}
+              autoComplete="off"
+              maxLength={2000}
+              disabled={status === 'thinking'}
+              aria-label="Type your question to Cadence"
+              placeholder="Type your question — no mic needed"
+              onChange={(event) => setTyped(event.target.value)}
+            />
+            <button
+              type="submit"
+              disabled={!typed.trim() || status === 'thinking'}
+              title="Send what you typed (Enter)"
+            >
+              Ask
+            </button>
+          </form>
+        )}
       </footer>
     </div>
   )

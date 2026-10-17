@@ -8,6 +8,181 @@ Stack: Chrome MV3 side panel -> FastAPI/agent backend on Nebius -> NVIDIA Nemotr
 
 ---
 
+## 2026-10-17 — the routing bug Step 12 found: a date lookup is not a plan
+
+**Verdict: the fix is forty lines of code and two sentences of prompt, and the
+interesting part is that the original behaviour was not a routing *error* at all.
+Every component did what it was told — and the result was 1.9 seconds and
+$0.00098 spent asking a question nobody asked.**
+
+### What went wrong
+
+Measured on the real model, before any change:
+
+```
+"when is my next deadline?"
+-> skill plan | tier ULTRA | 2 steps | 1869 ms | $0.000980
+-> "I have your organic chemistry midterm on November 12 from memory, but you
+    didn't tell me how many days or hours you can actually study before then -
+    give me that number and I'll lay out the blocks."
+```
+
+Three things are each defensible and together are absurd. The router saw a
+sentence containing *deadline* and a *when*, and `plan`'s `when_to_use` mentions
+"when should I do this by" — close enough for a classifier. `plan` is the one skill
+on **Ultra**, by design, because allocating time against a deadline is where a
+wrong answer costs real hours. And `plan` is *supposed* to ask for the missing
+piece rather than invent a schedule, which is why it asked for hours.
+
+None of that was the bug. The bug was that the question had already been answered,
+by us, in code, two functions away — `scheduler.deadlines()` computes the day
+count for the very note the model was quoting back. **We paid the most expensive
+tier in the project to re-derive a fact we were holding.** Step 9 had already hit
+the same wall from the other direction: a live "how many days until my midterm"
+answered **49** where code says **28**.
+
+### The fix, in two layers
+
+1. **The answer is computed** (`brief_lookup` in [`backend/server.py`](backend/server.py)).
+   A date question is answered from the brief itself, in code, before the router is
+   called: *"Next up: my organic chemistry midterm - due 2026-11-12 (26 days from
+   now)."* Free, instant, and — the property that actually matters — **unable to
+   disagree with the brief on the screen above it**, because it is composed by the
+   same function. The chip on the meta line reads `brief` in the server-chosen
+   style, like `quiz`.
+2. **The router is told what a lookup is** — a rule in `ROUTER_SYSTEM`, and an
+   exclusion in `plan`'s own `not_for` — because patterns will never cover every
+   phrasing and the escalation to Ultra is a decision only the router makes.
+
+The narrowness is the hard half. A lookup is answered only when the sentence is a
+question about the schedule, is short, contains no work verb, and the student's own
+files can answer it. *"when should I study for the midterm"* starts with `when` and
+still routes to a skill; *"when is my physics final due?"* with no note about a
+physics final routes too, rather than being told "nothing is due" about something we
+were never told. **Silence is the correct answer when the files cannot answer**, and
+that rule is tested as hard as the positive cases.
+
+### What the tests caught that the live run would not have
+
+- **The two most common phrasings were the two that fell through.** *"when's my next
+  deadline"* and *"what's due this week"* were answered with an empty string, and it
+  was not the patterns: the possessive apostrophe turned `when's` into a *subject
+  word*, so the code looked for a note about "when's". Found by printing a table of
+  real phrasings instead of asserting on the one in the bug report.
+- **The first sentence read like two dates arguing**: *"the history essay is due
+  October 20 - due 2026-10-20 (3 days from now)"*. The note's own trailing date is
+  now trimmed, and only in the exact written forms of the date the scheduler already
+  resolved, so nothing else can be eaten.
+- **An existing test had to change, deliberately.** `test_smoke.py` pinned that
+  "how many days until my midterm" produced *two* model calls with the computed dates
+  in the second prompt. That is now zero calls, which is strictly better, so the test
+  was split: one half asserts the free answer over HTTP (and that the number in the
+  reply equals the number `/brief` computes), the other keeps the original property
+  with a request that still routes — because the dates block still matters for every
+  turn that reaches a model.
+
+### Cost of being wrong the other way, which is the reason for the shape
+
+A fast path that captures what it should not is worse than the bug it fixes: a
+student asking for a plan who gets a date read back has been *ignored*, and the Log
+tab would show a turn that looks successful. So the pass-through cases are the
+larger half of [`backend/tests/test_recall.py`](backend/tests/test_recall.py) — 32
+tests, twelve of them asserting that a work request does **not** get answered here.
+
+---
+
+## 2026-10-17 — Step 12: a read-only calendar, and the four ways "read-only" could have been a lie
+
+**Verdict: the feature is one sentence — *Cadence may look at your calendar and
+may never change it* — and almost all of the work went into making "may never"
+checkable rather than promised. The scope is the credential, and it is the only
+scope in the project.**
+
+### What worked
+
+- **Asking the service index first said "none", which was the useful answer.** No
+  calendar provider in the catalog means no trade-off to weigh: Google's own
+  Calendar API, and nothing to integrate. One search, then straight to the docs.
+- **Reading the flow documentation instead of remembering it changed the request.**
+  Google's *installed app* documentation is not the web-server one: a desktop
+  client gets a refresh token without `access_type=offline`, incremental
+  authorization (`include_granted_scopes`) is not supported there, and
+  `prompt=consent` would mean a second consent screen for a grant we already hold. The authorization URL
+  now sends none of the three — and a test asserts their *absence*, because a
+  parameter added "just in case" is exactly the kind of thing that creeps back in.
+- **The loopback redirect has no path, so the callback lands on `/`.** That is also
+  where the panel is served, so the two are told apart by one rule in one place: a
+  `code` or an `error` in the query is Google, anything else is the panel. Tested
+  both ways, including that `/demo` and `/` with no query never reach the handler.
+- **PKCE, with the verifier in memory and nowhere else.** The `state` is single
+  use, ten minutes, and at most 32 alive at once; the challenge is checked to be
+  the actual SHA-256 of the verifier that gets sent at exchange time, so the
+  handshake cannot be "PKCE-shaped" without being PKCE.
+- **The calendar is a second route, not a second paragraph of `/brief`.** `/brief`
+  reads files on this machine and cannot fail; `/calendar` talks to Google and can.
+  Two sources, two footnotes, no shared failure mode — and a test pins the property
+  a student would notice: an unreachable calendar leaves the deadlines alone.
+- **Three silences, all of them cheap.** No client ID → no network call at all. Not
+  connected → no network call either. Connected → one read, reused for a minute.
+  A student who never asked for a calendar costs zero requests.
+- **The token file is 0600, gitignored, and unreadable by the demo.** The demo
+  reports a calendar that does not exist instead of the operator's dentist
+  appointments, and the test proves it never even reads the file.
+
+### What didn't work (and what it taught us)
+
+- **Google's all-day `end.date` is exclusive**, so a one-day event has an end of
+  *the next day*. Keeping the exclusive value and never displaying it is simpler and
+  more honest than subtracting a day; the test asserts the day after the event
+  appears in nothing the panel is handed.
+- **`datetime.fromisoformat` rejects a trailing `Z` on Python 3.9** — which is the
+  Python this repo is developed on. Google sends both forms. One normalisation, and
+  a test with a real `Z` timestamp, because 3.11 would have hidden it.
+- **A sort key nearly became a serialisation bug.** `parse_events` keeps a private
+  `_start` datetime so the list can be ordered by the real instant; the payload is
+  only JSON-safe because `compose` drops underscore keys. That is a good design,
+  but "good design" is not a guarantee: a test now `json.dumps` the composed event
+  and would fail the day that filter is removed or renamed.
+- **I wrote a test that asserted the *absence* of a log line, and it was wrong.**
+  The callback with a freshly issued state logged `calendar_callback outcome=refused`
+  because in that run the exchange did reach Google and was rejected — the state
+  was fine. The assertion now names the outcome it expects, and stubs the exchange,
+  instead of asserting silence. *A test that says "nothing happened" cannot tell a
+  refused state from a failed request.*
+- **That failure was also the most useful thing in the session.** With a bogus
+  client ID the live exchange came back
+  `refused | Google rejected the client ID in .env. Check GOOGLE_CLIENT_ID against
+  your OAuth client.` — a real 401 from Google, which proves the endpoint, the
+  form encoding, the PKCE verifier and the error mapping are all right without
+  needing a working credential.
+
+### Where Google's docs were unclear
+
+- **Is the client secret required?** For a *Desktop app* client, no — it is a public
+  client. The docs say so, but every quickstart includes one anyway, so the module
+  sends it only when it exists, and `configured()` checks only the client ID. A
+  setup that works should not be told it is broken.
+- **Does the redirect URI need the path?** The installed-app guide says loopback
+  IP form, no path, fixed port. That is what we register and what we send, and the
+  README says it out loud because a mismatched redirect is Google's least helpful
+  error.
+
+### Still true, and named here rather than hidden
+
+- **It shows; it does not notify.** The `remind` half of "remind me what is due" is
+  still a brief you have to open. No push, no desktop notification, no alarm.
+- **It is local-only by construction** — the redirect is `127.0.0.1`, so the consent
+  flow completes on the machine running the backend.
+- **One calendar**, the primary one, read-only, seven days ahead, ten events.
+- **A separate routing bug found while testing the text box, still open:** *"when is
+  my next deadline?"* routed to `plan` on **Ultra** and spent 2.5 s asking how many
+  hours the student had to study, when the date was already in memory. Typing works;
+  the router's choice for that sentence does not. Written down here instead of
+  quietly fixed, because it is a routing-quality problem and deserves its own
+  measurement.
+
+---
+
 ## 2026-10-16 — Step 11 (second slice): the agent drafts a skill, the student approves the file
 
 **Verdict: the write path took an hour; the *prompt* took three live runs to get

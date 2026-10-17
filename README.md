@@ -81,7 +81,7 @@ Every tier lives in exactly one file, [`config/models.json`](config/models.json)
 
 ## Try it in 60 seconds
 
-> **Honest status:** Steps 0–6 and 8–11 are done — Step 11 finished with grounded citations, the agent writing its own skill, and the per-request cost warning, all described below. The voice loop, the router, persistent memory, page reading, the quiz loop, the daily brief and the general agent loop all work — ask *"break lab report 3 into study blocks"* and Nemotron Nano picks the `study_breakdown` skill, which then runs on Super; say *"remember my midterm is on November 12"* and it is written to a Markdown file you own, visible in the Memory tab; say *"quiz me on this page"* and it asks you questions, grades your spoken answers, and records the result in the **Progress** tab. The brief at the top of **Today** says what is due without spending anything, the **Log** tab shows what the backend just did, and every reply carries what it cost. A searched answer now names the pages it came from: the reply cites them by number, the links under it open the real pages, and a citation with no page behind it is dropped rather than shown. There is still **no hosted demo URL** — Step 7's deploy is blocked on the Nebius account, not on code — but there is a `/demo` mode you can run yourself, with a bundled sample course load and no extension install. There are exactly **six** hand-written skills plus the router — and the agent can now draft a *new* one for you to read and approve (say *"write yourself a skill for turning a lab report into study blocks"*): the file is shown in full before it exists, nothing is written until you say yes, and the next request can use it without a restart. Everything below is real, and the fast parts take about two minutes.
+> **Honest status:** Steps 0–6 and 8–12 are done. **Step 12** added a read-only **Google Calendar** section to the brief: Cadence can see what is coming up and can never change an event, because `calendar.readonly` is the only permission it asks for — the [setup is below](#let-cadence-see-your-calendar). Step 11 finished with grounded citations, the agent writing its own skill, and the per-request cost warning, all described below. The voice loop, the router, persistent memory, page reading, the quiz loop, the daily brief and the general agent loop all work — ask *"break lab report 3 into study blocks"* and Nemotron Nano picks the `study_breakdown` skill, which then runs on Super; say *"remember my midterm is on November 12"* and it is written to a Markdown file you own, visible in the Memory tab; say *"quiz me on this page"* and it asks you questions, grades your spoken answers, and records the result in the **Progress** tab. The brief at the top of **Today** says what is due without spending anything, the **Log** tab shows what the backend just did, and every reply carries what it cost. A searched answer now names the pages it came from: the reply cites them by number, the links under it open the real pages, and a citation with no page behind it is dropped rather than shown. There is still **no hosted demo URL** — Step 7's deploy is blocked on the Nebius account, not on code — but there is a `/demo` mode you can run yourself, with a bundled sample course load and no extension install. And if the machine you are on has no microphone, the panel does not leave you with a dead button: press **Type instead**, or just watch the text box open by itself when the browser has no speech recognition. There are exactly **six** hand-written skills plus the router — and the agent can now draft a *new* one for you to read and approve (say *"write yourself a skill for turning a lab report into study blocks"*): the file is shown in full before it exists, nothing is written until you say yes, and the next request can use it without a restart. Everything below is real, and the fast parts take about two minutes.
 
 **1. Clone and set up the key**
 
@@ -124,7 +124,9 @@ cd extension && npm install && npm run build
 1. Open `chrome://extensions` and turn on **Developer mode**
 2. **Load unpacked** → choose the `extension/dist` folder
 3. Click the Cadence toolbar icon to open the side panel, hit the mic, and say
-   *"what's due this week"*
+   *"what's due this week"* — or press **Type instead** and type it, which is the
+   same turn by a different door (and the one that opens by itself on a machine
+   with no microphone)
 
 Your words appear as you speak, then the reply is spoken back. The header badge
 shows the backend mode — if it reads `offline`, the backend isn't running. Full
@@ -223,6 +225,27 @@ The four things a student says during a quiz that aren't material — *"stop"*,
 Progress tab exists to collect), the right answer is read back, and the next
 question follows.
 
+**The same trick answers the one question the brief already answers.** *"When is
+my next deadline?"*, *"what's due this week"*, *"how long until the midterm"* are
+answered from `memory/deadlines.md` **in code, before the router is called**: a
+plain sentence naming the date and the countdown, no model, no latency worth
+measuring, $0.000000. And because that sentence is built by the same function that
+composes the brief, the spoken answer and the panel above it cannot disagree —
+which is the real reason it is computed rather than generated.
+
+This exists because of a measured bug: live, *"when is my next deadline?"* was
+routed to **`plan` on Ultra** and came back with *"I have your organic chemistry
+midterm on November 12 from memory, but you didn't tell me how many days or hours
+you can actually study before then"* — **1.9 s and $0.00098 to ask a question
+nobody had asked**, about a date the student had already given us. Two layers fix
+it: the code path above answers the phrasings it recognises, and the router is
+told in its prompt and in `plan`'s own `not_for` that a date lookup is not a plan.
+It is deliberately narrow — a request that also asks for work (*"when should I
+study for the midterm"*, *"plan my week, I have six hours"*) still routes to the
+skill that does that work, and a subject with no matching note falls through to
+the router instead of being told "nothing is due" about something we were never
+told. Both halves are pinned in [`backend/tests/test_recall.py`](backend/tests/test_recall.py).
+
 The **Progress tab** is a view over `progress/*.md` — the same bet as memory, for
 the same reason. A study record is *more* sensitive than a note; it is a list of
 the things you got wrong. So it is one plain Markdown file per quiz, named for
@@ -304,6 +327,83 @@ That serves the same React panel with no extension installed, on a thrown-away
 copy of [`demo/`](demo/README.md)'s sample course load, and gives each visitor 20
 questions. What it is **not** is a hosted URL — see the deploy notes above for why
 that one is waiting on Nebius.
+
+---
+
+## Let Cadence see your calendar
+
+The brief already knows what is due, because you told it in a sentence. A calendar
+knows what is *scheduled*, which is the other half of the same week — so the brief
+has a second section that reads it live.
+
+**The promise is one sentence: Cadence may look at your calendar and may never
+change it.** That is not a policy written into a prompt, it is the credential. The
+only scope requested anywhere in this project is
+
+```
+https://www.googleapis.com/auth/calendar.readonly
+```
+
+so a bug in the backend, holding the token, could still not create, move or delete
+an event. The action log records `calendar_connected read_only=true` from the scope
+Google actually granted — a fact read back from the token response, not a claim we
+make in a comment.
+
+**Setting it up** (once, about three minutes):
+
+1. [Google Cloud console](https://console.cloud.google.com) → pick a project →
+   **APIs & Services → Library → Google Calendar API → Enable**.
+2. **OAuth consent screen** → *External* → name the app → add your own Google
+   account under **Test users**. An app in testing mode only works for the accounts
+   listed there; this is the step that produces `access_denied` when skipped.
+3. **Credentials → Create credentials → OAuth client ID → Desktop app**. Copy the
+   client ID into `.env`:
+
+   ```bash
+   GOOGLE_CLIENT_ID=....apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=...        # optional for a desktop client
+   ```
+
+4. Restart the backend and press **Connect Google Calendar** in the brief (or open
+   `http://127.0.0.1:8787/oauth/google/start`).
+
+**What happens on the way back.** Google redirects to the loopback redirect its docs
+specify for a desktop client — `http://127.0.0.1:8787`, no path — so the answer
+lands on `/`, which is also where the panel is served. The two are told apart by
+the query and nothing else: a `code` or an `error` is Google, anything else is the
+panel. That route is the one door answered *before* the bearer-token check, because
+a browser redirect cannot carry a header; what guards it instead is a `state` we
+generated (single use, ten minutes, 32 of them at most) and PKCE, whose verifier
+lives only in this process's memory. The reply is a plain page that says what was
+granted, in words: read-only.
+
+**Where it shows up.** Under the deadlines, labelled `From your calendar`, one line
+per event — `tomorrow — Chemistry lab (14:00, Cavendish 2.14)` — read fresh, capped
+at ten, looking seven days ahead like the deadlines beside it. It is a separate
+request (`GET /calendar`) so a slow or unreachable Google cannot delay them, reused
+for a minute, and **never written into memory**: a moved event cannot leave a stale
+note behind. `/health` reports `calendar.configured` and `calendar.connected` as
+two separate booleans, because "no OAuth client on this machine" is a setup problem
+and "not connected yet" is a button.
+
+**What it costs:** nothing. The lines are composed in code from Google's JSON, the
+same way the deadline lines are — no model call, `cost_usd: 0`.
+
+**The honest limits:**
+
+- **It is local-only, by construction.** The redirect is `127.0.0.1`, so the consent
+  flow has to run on the machine running the backend. A server can *hold* a token
+  connected locally (copy `data/google-token.json` plus the same client ID), but it
+  cannot run the flow itself — see [`deploy/README.md`](deploy/README.md).
+- **It reads one calendar** — the primary one — and no other Google product.
+- **It shows, it does not notify.** There is no push, no desktop notification, no
+  alarm. The nudge is a brief you have to open, which is the half of "remind me"
+  this step did not build.
+- **A read can be up to a minute stale**, deliberately, because the panel asks on
+  every open and after every turn.
+- **Disconnect** with `curl -X DELETE http://127.0.0.1:8787/calendar`, or by deleting
+  `data/google-token.json`. The file is written `0600`, is gitignored, and never
+  leaves the machine.
 
 ---
 
@@ -392,6 +492,9 @@ cp .env.example .env
 | `CADENCE_DEMO` | no | `on` serves the panel at `/demo` on a bundled sample course load, capped per visitor. Refuses to start if `CADENCE_TOKEN` is also set — a public demo cannot require a token. |
 | `EXA_API_KEY` | no | Web search for the general agent loop (Step 9). **The one we'd pick** — [dashboard.exa.ai](https://dashboard.exa.ai/api-keys), free monthly credits. |
 | `TAVILY_API_KEY` | no | The alternative search provider: [app.tavily.com](https://app.tavily.com/home). Exa wins if both are set. |
+| `GOOGLE_CLIENT_ID` | no | Read-only Google Calendar in the brief. A **Desktop app** OAuth client; without it the calendar section is simply absent and no request is made. See [Let Cadence see your calendar](#let-cadence-see-your-calendar). |
+| `GOOGLE_CLIENT_SECRET` | no | Only if your OAuth client issued one — a desktop client is a public client, and requiring a secret here would break a correct setup. |
+| `CADENCE_GOOGLE_TOKEN` | no | Where the refresh token is kept. Default `data/google-token.json` (gitignored, `0600`). |
 
 Without either key the loop still answers — it just reports what it could not check, and `/health` says so under `tools.search.configured` rather than pretending otherwise.
 

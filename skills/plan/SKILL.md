@@ -8,7 +8,7 @@ tier: ultra
 requires_confirmation: false
 context: [memory, page]
 when_to_use: "the student asks how to fit work into the time they have — 'plan the next four evenings', 'how should I split this over the week', 'plan my revision before Friday', 'when should I do this by'"
-not_for: "a request for only the first move or two ('where do I start', 'break this into pieces'), which is study_breakdown, or a request to explain, rephrase, quiz, or remember something. Also not for a schedule with no deadline or time span in it, which leaves nothing to allocate, and not for a request to create or draft a NEW skill for our own library - that is the general path, and a plan for the task is not the skill file they asked for"
+not_for: "a request for only the first move or two ('where do I start', 'break this into pieces'), which is study_breakdown, or a request to explain, rephrase, quiz, or remember something. Also not for a schedule with no deadline or time span in it, which leaves nothing to allocate, and not for a request to create or draft a NEW skill for our own library - that is the general path, and a plan for the task is not the skill file they asked for. And **not for a bare date lookup** - 'when is my next deadline', 'what is due this week', 'when is the midterm': the date is already on file and the brief answers it in code, so there is nothing here to allocate and no question of theirs to answer"
 tools: []
 metadata:
   hermes:

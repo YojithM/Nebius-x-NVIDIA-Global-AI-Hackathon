@@ -54,9 +54,11 @@ from quiz import (  # noqa: E402
     Question,
     clamp_count,
 )
+import gcal  # noqa: E402
 from router import extract_json_object, route  # noqa: E402
 from scheduler import (  # noqa: E402
     DEFAULT_HORIZON_DAYS,
+    MONTHS,
     brief_due,
     compose_brief,
     deadlines,
@@ -137,6 +139,16 @@ LOG_PATH = BACKEND_DIR / "logs" / "action-log.jsonl"
 # the slowest thing in a request.
 LOG_TAIL_LINES = 200
 LOG_TAIL_BYTES = 256 * 1024
+
+# ------------------------------------------------------- the calendar (12) --
+# Read-only Google Calendar. Two process-wide objects and no thread: events are
+# read when the brief is requested, never polled in the background, so a quiet
+# laptop makes no requests to Google at all. See `backend/gcal.py` for the flow
+# and for why the scope is the narrow one.
+CALENDAR = gcal.TokenStore()
+# The connect attempts this process has started. In memory on purpose: a state that
+# survives a restart is a state with a longer life than the sign-in it belongs to.
+CALENDAR_PENDING = gcal.PendingFlows()
 
 # How much of a page we will ever accept. Bounded on purpose: a page is a
 # document, and a document is a stick to beat a context window with. The panel
@@ -591,6 +603,267 @@ def brief_payload() -> dict:
         open_quiz=quiz_state(PROGRESS.active()),
         generated_at=time.strftime("%H:%M:%S"),
     )
+
+
+# ------------------------------------------- a date already on file (brief) --
+#
+# "When is my next deadline?" is the one question this backend can already answer
+# exactly: the student told us the date, `brief_payload()` does the arithmetic, and
+# a model would only be re-deriving a fact we hold. Live, that question used to
+# reach `plan` on **Ultra** and come back asking how many hours the student had to
+# study - 1.9 s and $0.00098 to not answer a question the brief answers for free.
+#
+# So it is answered here, in code, before the router is called. Two rules keep it
+# from over-reaching, and both are tested:
+#
+# 1. **It only fires on a question about the schedule.** A length bound, a
+#    work-verb blacklist, and four sentence shapes. A request that also asks for a
+#    plan, an explanation, a quiz or a memory write is somebody else's job and
+#    routes normally - "when should I study for the midterm" is a planning
+#    question even though it starts with "when".
+# 2. **It only fires when the student's own files can answer it.** No dated note,
+#    or a named subject that matches no note, means no answer from here: the turn
+#    falls through to the router rather than saying "nothing is due" about
+#    something we were never told. Silence is cheaper than a confident wrong date.
+
+_BRIEF_LOOKUP_MAX_CHARS = 120
+
+# The shapes a date lookup arrives in. Anchored loosely on purpose - the subject
+# can be anywhere between the question word and the noun - but bounded to one
+# sentence, so a two-part request does not get half-answered here.
+_BRIEF_QUESTION_SHAPES = (
+    re.compile(
+        r"\bwhen(?:'s|s| is| are| do| does| will| was)?\b[^.?!]*\b(?:due|deadline|deadlines|"
+        r"midterm|midterms|exam|exams|test|tests|assignment|assignments|paper|papers|essay|"
+        r"project|final|finals|lab|quiz)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bwhat(?:'s|s| is)?\b[^.?!]*\b(?:due|coming up)\b", re.IGNORECASE),
+    re.compile(
+        r"\bhow (?:long|many days|many weeks|soon)\b[^.?!]*\b(?:until|till|'til|to|before)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\banything\b[^.?!]*\b(?:due|coming up)\b", re.IGNORECASE),
+)
+
+# If any of these is in the sentence, it is not only a date lookup. This is the
+# list that keeps "when is my midterm and can you plan the week" out of here, and
+# it is why "when should I study" still reaches `plan`.
+_BRIEF_WORK_WORDS = re.compile(
+    r"\b(?:plan|planning|schedule|scheduling|fit|split|break|explain|rephrase|quiz|"
+    r"remember|note|revise|revision|prioriti[sz]e|study|studying|prepare|prep|help|"
+    r"why|should|can you|could you|would you|make|write|draft)\b",
+    re.IGNORECASE,
+)
+
+# Words that describe the *question* rather than the thing being asked about, so
+# what is left after removing them is the subject the student named.
+_SCHEDULE_WORDS = frozenset(
+    """
+    a again am an and anything are as at be been before by can coming date dates
+    day days deadline deadlines did do does due exactly for from get got had has
+    have homework how i in is it its just long many me month months my next now of
+    on or soon stuff tell that the then there these thing things this those till
+    today tomorrow tonight until to up was week weeks what whats when whens will
+    with work
+    """.split()
+)
+
+
+def _words(text: str):
+    """Lowercase words, with a possessive `'s` dropped.
+
+    So "when's" and "what's" read as the question words they are instead of
+    turning into a subject named "when's" - which is exactly the bug this caught:
+    the two most common phrasings were the two that fell through.
+    """
+    lowered = re.sub(r"'s\b", "", (text or "").lower())
+    return [part for part in re.findall(r"[a-z0-9]+", lowered) if part]
+
+
+def _subject_words(transcript: str):
+    """What the student named, with the question's own vocabulary taken out."""
+    return [word for word in _words(transcript) if word not in _SCHEDULE_WORDS]
+
+
+def _mentions(text: str, words) -> bool:
+    """Does this note talk about every word the student named?
+
+    Prefix matching with a four-character floor, because a student says "chem"
+    about a note that says "chemistry" and expects the answer - but a two-letter
+    overlap would match everything and answer the wrong question.
+    """
+    have = set(_words(text))
+    for word in words:
+        if not any(
+            word == other
+            or (len(word) >= 4 and len(other) >= 4 and (other.startswith(word) or word.startswith(other)))
+            for other in have
+        ):
+            return False
+    return True
+
+
+def _deadline_when(deadline: dict) -> str:
+    """`due 2026-11-12 (26 days from now)` - the brief's own arithmetic, spoken."""
+    due = str(deadline.get("due") or "")
+    left = int(deadline.get("days_left") or 0)
+    if left < 0:
+        count = -left
+        return f"overdue since {due} ({count} day{'s' if count != 1 else ''} ago)"
+    if left == 0:
+        return f"due today ({due})"
+    if left == 1:
+        return f"due tomorrow ({due})"
+    return f"due {due} ({left} days from now)"
+
+
+def _without_its_date(text: str, due: str) -> str:
+    """The note, minus the date it already states.
+
+    "the history essay is due October 20" becomes "the history essay", because the
+    sentence we add carries the date *and* the countdown. Left in, the two sides
+    argue: "the history essay is due October 20 - due 2026-10-20 (3 days from
+    now)". Only exact written forms of the date the scheduler already resolved are
+    removed, only from the end of the sentence, so nothing else can be eaten.
+    """
+    try:
+        moment = date.fromisoformat(str(due))
+    except (TypeError, ValueError):
+        return text
+    full = MONTHS[moment.month - 1]
+    short = full[:3]
+    day, year = moment.day, moment.year
+    forms = [
+        moment.isoformat(),
+        f"{full} {day}", f"{full} {day}, {year}", f"{full} {day} {year}",
+        f"{short} {day}", f"{short}. {day}", f"{short} {day}, {year}",
+        f"{short}. {day}, {year}",
+        f"{day} {full}", f"{day} {full} {year}", f"{day} {full}, {year}",
+        f"{day} {short}", f"{day} {short}.", f"{day} {short} {year}",
+    ]
+    written = "|".join(re.escape(form) for form in sorted(forms, key=len, reverse=True))
+    trimmed = re.sub(r"[\s,:(]*(?:%s)[\s.,)]*$" % written, "", text, flags=re.IGNORECASE)
+    # Removing the date leaves its connector behind ("...is on"), so drop that too.
+    trimmed = re.sub(
+        r"[\s,:]*(?:\b(?:is|are|was|due|on|by|at|for|the|until)\b[\s,:]*)+$",
+        "",
+        trimmed,
+        flags=re.IGNORECASE,
+    )
+    return trimmed.strip(" -,:;.") or text
+
+
+def _deadline_answer(shown, total: int, *, more_after: bool = True) -> str:
+    """One spoken sentence for one or more dated notes.
+
+    The note's own text is quoted rather than paraphrased, and the ISO date is
+    always present: the brief shows the same date, so a student who reads both can
+    see them agree - and a wrong date is visible instead of plausible.
+    """
+    first = shown[0]
+    lines = [
+        "{0} - {1}".format(
+            _without_its_date(str(item.get("text") or "").strip().rstrip("."), item.get("due")),
+            _deadline_when(item),
+        )
+        for item in shown
+    ]
+    lead = "Overdue: " if int(first.get("days_left") or 0) < 0 else "Next up: "
+    reply = lead + "; ".join(lines) + "."
+    hidden = total - len(shown)
+    if more_after and hidden > 0:
+        reply += f" That is the soonest {len(shown)} of {total} dated notes."
+    return reply
+
+
+def brief_lookup(transcript: str, brief=None) -> str:
+    """Answer a date question from the brief, or "" to let the turn route.
+
+    The empty string is the important return value: it means "this is not a
+    question my files answer", and the caller routes it like any other turn.
+    Everything here is a pure function of the transcript and the brief, so the
+    reply is the same twice and cannot drift from the panel above it.
+    """
+    text = " ".join((transcript or "").split())
+    if not text or len(text) > _BRIEF_LOOKUP_MAX_CHARS:
+        return ""
+    if _BRIEF_WORK_WORDS.search(text):
+        return ""
+    if not any(shape.search(text) for shape in _BRIEF_QUESTION_SHAPES):
+        return ""
+
+    brief = brief if brief is not None else brief_payload()
+    dated = brief.get("deadlines") or []
+    if not dated:
+        # Nothing to say. An invitation to tell us, rather than an answer made of
+        # air - and no model call, because there is no fact for one to find.
+        return ""
+
+    subject = _subject_words(text)
+    if subject:
+        matched = [item for item in dated if _mentions(str(item.get("text") or ""), subject)]
+        if not matched:
+            return ""
+        return _deadline_answer(matched[:1], 1, more_after=False)
+
+    return _deadline_answer(dated[:3], len(dated))
+
+
+def _esc(text) -> str:
+    """Minimal HTML escaping for the one page a browser lands on by itself.
+
+    Not a template engine: the strings here are our own sentences plus whatever
+    Google put in `?error=`, and remote input in an HTML page is how a redirect
+    becomes a script tag.
+    """
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def calendar_payload() -> dict:
+    """Read the student's Google Calendar, or say plainly why not.
+
+    Never raises: a calendar is the second thing in the brief and must not be able
+    to break the first. Three paths, and the first two make no network call at all
+    - see `gcal.section`, which owns that logic.
+
+    The log line carries counts and a code, never a title. That is the Step 8 rule
+    and it is at its most important here: an event title is the most personal text
+    this project ever touches ("dentist", "meeting with Sam"), and the action log
+    is designed to be readable by whoever is reviewing a deploy.
+    """
+    if DEMO_MODE:
+        # Same rule the log learned in Step 10, for the same reason: a public
+        # demo must not show the operator's own things, and a calendar is the most
+        # personal of them. The visitor gets a "not connected" answer, and the
+        # operator's token is not read at all.
+        return gcal.not_connected_payload(
+            configured_now=False,
+            explanation="This is the demo, so there is no calendar behind it.",
+        )
+
+    payload = gcal.section(
+        CALENDAR, today=_today_date(), horizon_days=BRIEF_HORIZON_DAYS
+    )
+    error = payload.get("error") or {}
+    counts = payload.get("counts") or {}
+    if error:
+        log_event("calendar_error", code=error.get("code"), route="/calendar")
+    elif payload.get("connected"):
+        log_event(
+            "calendar_read",
+            events=counts.get("events"),
+            today=counts.get("today"),
+            all_day=counts.get("all_day"),
+            more=bool(counts.get("more")),
+        )
+    return payload
 
 
 # ----------------------------------------------------------------- the gate --
@@ -1703,8 +1976,153 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Max-Age", "600")
         self.end_headers()
 
+    # ---------- the calendar (Step 12) ----------
+
+    def _is_google_callback(self):
+        """Is this Google's redirect back from the consent screen?
+
+        The loopback redirect Google documents has **no path**, so the answer
+        comes back to `/` - which is also where the panel is served. The two are
+        told apart by the query and nothing else: a `code` or an `error` is Google,
+        anything else is the panel. One rule, in one place, with a test.
+        """
+        if self.path.split("?")[0] not in ("/", ""):
+            return False
+        params = parse_qs(urlparse(self.path).query)
+        return bool(params.get("code") or params.get("error"))
+
+    def _html(self, status, title, body):
+        """The one route a browser lands on by itself, so it answers with a page.
+
+        Escaped, because `?error=` is remote input and this is HTML.
+        """
+        page = (
+            '<!doctype html><meta charset="utf-8">'
+            f"<title>{_esc(title)}</title>"
+            '<body style="font:15px system-ui;margin:3rem auto;max-width:34rem;'
+            'padding:0 1.2rem;color:#12121a">'
+            f'<h1 style="font-size:1.15rem">{_esc(title)}</h1>'
+            f"<p>{_esc(body)}</p>"
+            '<p style="color:#6b6b76">You can close this tab.</p></body>'
+        )
+        self._send_bytes(status, page.encode("utf-8"), "text/html; charset=utf-8")
+
+    def _redirect(self, url):
+        """A 302, for the one route that has to be a browser navigation.
+
+        `Cache-Control: no-store` because a redirect to a consent screen carries a
+        one-time state, and a cached redirect is a state the browser might replay.
+        """
+        self.send_response(302)
+        self._cors()
+        self.send_header("Location", url)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _google_callback(self):
+        """Finish the sign-in: check the state, then trade the code for tokens.
+
+        This route is answered before the token gate because a browser redirect
+        cannot carry our bearer token. What protects it is not a secret in a header
+        but the state - 192 bits we generated, good for one use, ten minutes - and
+        the fact that the exchange needs our client id and the PKCE verifier that
+        state is holding.
+        """
+        params = parse_qs(urlparse(self.path).query)
+        state = (params.get("state") or [""])[0]
+        code = (params.get("code") or [""])[0]
+        refusal = (params.get("error") or [""])[0]
+
+        if DEMO_MODE:
+            self._log("calendar_callback", outcome="demo")
+            self._html(
+                400,
+                "The demo has no calendar",
+                "This server is a public demo, so there is no Google account "
+                "behind it to connect.",
+            )
+            return
+
+        verifier = CALENDAR_PENDING.consume(state)
+        if verifier is None:
+            # The one unaudited door in the whole backend, so it says precisely
+            # which way it was knocked on and does nothing else.
+            self._log("calendar_callback", outcome="bad_state")
+            self._html(
+                400,
+                "That sign-in did not come from this server",
+                "The state parameter was missing, already used, or older than ten "
+                "minutes. Start the connection again from the panel.",
+            )
+            return
+
+        if refusal:
+            self._log("calendar_callback", outcome="refused", code=refusal)
+            self._html(400, "Google refused the sign-in", f"Google said: {refusal}.")
+            return
+
+        if not code:
+            self._log("calendar_callback", outcome="no_code")
+            self._html(400, "No authorization code arrived", "Google's answer had no code in it.")
+            return
+
+        try:
+            tokens = gcal.exchange_code(code, verifier=verifier, port=PORT)
+        except gcal.CalendarError as exc:
+            self._log("calendar_callback", outcome=exc.code)
+            self._html(400, "Could not finish the sign-in", str(exc))
+            return
+
+        CALENDAR.save(tokens)
+        gcal.forget()
+        # Logged as a fact we verify rather than a fact we assume: the scope Google
+        # actually granted is in its token response, and read-only is what makes
+        # "I cannot change your calendar" true rather than aspirational.
+        granted = tokens.get("scope") or ""
+        self._log("calendar_connected", read_only="readonly" in granted)
+        self._html(
+            200,
+            "Connected",
+            "Cadence can see the events on your calendar and cannot change "
+            "anything on it - the permission it holds is read-only, so even a bug "
+            "in here could not edit your calendar. Disconnect any time with "
+            "DELETE /calendar.",
+        )
+
+    def _calendar_start(self):
+        """Send the browser to Google to ask for read-only access."""
+        if DEMO_MODE:
+            self._log("calendar_start", outcome="demo")
+            self._fail(
+                400,
+                "this server is the demo, and the demo has no Google account "
+                "behind it. Run it locally to connect a calendar.",
+            )
+            return
+        if not gcal.configured():
+            self._fail(
+                400,
+                "no Google OAuth client is configured. Put GOOGLE_CLIENT_ID in "
+                ".env (and the secret if you created a client that has one) - "
+                "the README section 'Let Cadence see your calendar' walks through "
+                "creating one.",
+            )
+            return
+        state, verifier = CALENDAR_PENDING.begin()
+        self._log("calendar_start", issued_state=True)
+        self._redirect(gcal.authorize_url(state=state, verifier=verifier, port=PORT))
+
     def do_GET(self):
         path = self.path.split("?")[0]
+
+        # The Google sign-in comes back as a browser redirect, which cannot carry
+        # our bearer token, so this one route is answered before the gate. It is
+        # guarded by the state instead of by the header, and only when a `code` or
+        # an `error` is present - a plain visit to `/` is the panel.
+        if self._is_google_callback():
+            self._google_callback()
+            return
 
         # /health stays open on purpose: it is how a deploy is checked, and it
         # carries no student data. Everything else needs the token when one is set.
@@ -1721,7 +2139,7 @@ class Handler(BaseHTTPRequestHandler):
                     "service": "cadence-backend",
                     # The last step whose code is all here. Step 7 is written and
                     # verified but not deployed, and says so itself.
-                    "step": 11,
+                    "step": 12,
                     "mode": "router",
                     "tiers": {
                         name: cfg["model"] for name, cfg in CONFIG["tiers"].items()
@@ -1758,6 +2176,17 @@ class Handler(BaseHTTPRequestHandler):
                     "panel": {
                         "built": PANEL.available,
                         "entry": f"/demo" if PANEL.available else None,
+                    },
+                    "calendar": {
+                        # Two booleans, and the difference between them is what the
+                        # panel shows: no OAuth client configured is a setup
+                        # problem the student can fix, not connected yet is a
+                        # button they can press.
+                        "configured": gcal.configured(),
+                        "connected": bool(CALENDAR.connected) and not DEMO_MODE,
+                        "read_only": True,
+                        "scope": gcal.SCOPE,
+                        "off": "demo" if DEMO_MODE else None,
                     },
                     "tools": {
                         # The tool set, and whether each one can run right now. A
@@ -1800,6 +2229,19 @@ class Handler(BaseHTTPRequestHandler):
             # Student data, so it is behind the token like everything else - and
             # no-store, because a brief is only true for the day it was made.
             self._send(200, brief_payload(), no_store=True)
+            return
+
+        if path == "/calendar":
+            # The calendar half of the brief, on its own route so a slow or
+            # unreachable Google cannot delay the deadlines it sits next to. Read
+            # live, never cached to disk, and no-store like everything else that
+            # describes the student's day.
+            self._send(200, calendar_payload(), no_store=True)
+            return
+
+        if path == "/oauth/google/start":
+            # A browser navigation rather than JSON: it has to end up at Google.
+            self._calendar_start()
             return
 
         if path == "/log":
@@ -1865,6 +2307,17 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/progress":
             self.do_DELETE_progress(parsed)
+            return
+        if parsed.path == "/calendar":
+            # Forgetting the calendar is one file and no second thought: the
+            # student's only route back is to delete what we stored, so this is
+            # idempotent and answers with the state it left behind.
+            removed = CALENDAR.clear()
+            gcal.forget()
+            self._log("calendar_disconnect", removed=bool(removed))
+            payload = gcal.not_connected_payload(configured_now=gcal.configured())
+            payload["removed"] = bool(removed)
+            self._send(200, payload)
             return
         if parsed.path != "/memory":
             self._fail(404, f"no route for DELETE {self.path}")
@@ -2104,38 +2557,59 @@ class Handler(BaseHTTPRequestHandler):
                 result = None
 
         if result is None:
-            # --- 2. route (Nemotron Nano) ---
-            try:
-                decision = route(
-                    get_client(), CONFIG, REGISTRY, transcript, page_title,
-                    memory_block, page_read=bool(page_text),
-                )
-            except NebiusError as exc:
-                self._log("turn_failed", reason="router", detail=str(exc)[:200])
-                self._fail(502, f"model call failed: {exc}")
-                return
-            steps = decision.attempts if open_quiz is None else steps + decision.attempts
-            router_cost = decision.cost_usd
-
-            # --- 3. act on the decision ---
-            try:
-                result, error, page_used, steps = self._act(
-                    decision, transcript, page_title, memory_block,
-                    context, page_text, steps,
-                )
-            except NebiusError as exc:
+            # --- 1d. a date already on file, answered without a model ---
+            # The brief's own arithmetic, in code, before the router is called:
+            # see `brief_lookup` for why this question does not deserve an Ultra
+            # plan. An empty answer means "not ours", and the turn routes as usual.
+            recalled = brief_lookup(transcript)
+            if recalled:
                 self._log(
-                    "turn_failed",
-                    skill=decision.skill,
-                    reason="execution",
-                    detail=str(exc)[:200],
+                    "brief_lookup",
+                    transcript_chars=len(transcript),
+                    # What the panel has to keep showing: a question asked mid-quiz
+                    # must not look like the quiz ended.
+                    quiz_session=(open_quiz.id if open_quiz is not None else None),
                 )
-                self._fail(502, f"model call failed: {exc}")
-                return
-            except QuizError as exc:
-                self._log("turn_failed", skill=decision.skill, reason="quiz", detail=str(exc)[:200])
-                self._fail(500, f"the quiz could not be saved: {exc}")
-                return
+                result = _no_model(recalled, quiz_state(PROGRESS.active()))
+                result["skill"] = "brief"
+            else:
+                # --- 2. route (Nemotron Nano) ---
+                try:
+                    decision = route(
+                        get_client(), CONFIG, REGISTRY, transcript, page_title,
+                        memory_block, page_read=bool(page_text),
+                    )
+                except NebiusError as exc:
+                    self._log("turn_failed", reason="router", detail=str(exc)[:200])
+                    self._fail(502, f"model call failed: {exc}")
+                    return
+                steps = decision.attempts if open_quiz is None else steps + decision.attempts
+                router_cost = decision.cost_usd
+
+                # --- 3. act on the decision ---
+                try:
+                    result, error, page_used, steps = self._act(
+                        decision, transcript, page_title, memory_block,
+                        context, page_text, steps,
+                    )
+                except NebiusError as exc:
+                    self._log(
+                        "turn_failed",
+                        skill=decision.skill,
+                        reason="execution",
+                        detail=str(exc)[:200],
+                    )
+                    self._fail(502, f"model call failed: {exc}")
+                    return
+                except QuizError as exc:
+                    self._log(
+                        "turn_failed",
+                        skill=decision.skill,
+                        reason="quiz",
+                        detail=str(exc)[:200],
+                    )
+                    self._fail(500, f"the quiz could not be saved: {exc}")
+                    return
 
         if grading_declined and result is not None and open_quiz is not None:
             # The grader said this was not an attempt at the question, so we
@@ -2203,7 +2677,11 @@ class Handler(BaseHTTPRequestHandler):
             memory_facts=MEMORY.count(),
             memory_saved_topic=saved["topic"] if saved else None,
             memory_prompt_chars=len(memory_block),
-            skill=decision.skill if decision else "quiz",
+            # "quiz" is the historical name for "no router chose this", and a
+            # server-decided turn that names itself (a brief lookup) says so - the
+            # Log tab reads this field, and calling every computed answer a quiz
+            # would make the tab unreadable exactly where it is most useful.
+            skill=decision.skill if decision else (result.get("skill") or "quiz"),
             skill_source=decision.source if decision else "server",
             # True when we asked the student something, whether the router escalated
             # or the loop drafted a skill file, because both arrive as a question.
@@ -2785,9 +3263,34 @@ def main():
     print("  DELETE /memory?topic=&fact=", flush=True)
     print("  GET    /progress", flush=True)
     print("  GET    /brief", flush=True)
+    print("  GET    /calendar", flush=True)
+    print("  DELETE /calendar", flush=True)
+    print("  GET    /oauth/google/start", flush=True)
     print("  GET    /log?limit=", flush=True)
     print("  DELETE /progress?session= | ?all=1", flush=True)
     print("  POST   /turn", flush=True)
+    if DEMO_MODE:
+        print(
+            "  calendar: off in demo mode - a public demo has no account behind it",
+            flush=True,
+        )
+    elif not gcal.configured():
+        print(
+            "  calendar: off - set GOOGLE_CLIENT_ID in .env to connect a "
+            "read-only Google Calendar (see the README)",
+            flush=True,
+        )
+    else:
+        print(
+            "  calendar: read-only Google Calendar - "
+            + (
+                "connected"
+                if CALENDAR.connected
+                else "not connected yet; connect from the panel, or GET "
+                "/oauth/google/start"
+            ),
+            flush=True,
+        )
     print(f"  max steps per request: {MAX_STEPS}", flush=True)
     for card in tool_cards():
         print(f"  tool: {card['name']} - {card['when'].splitlines()[0]}", flush=True)

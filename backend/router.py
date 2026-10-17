@@ -52,6 +52,8 @@ The "general" path can also draft a new skill file for our own library, and no s
 
 A request for something that changes over time - a version, a price, a date, a score, a schedule, a current release - is ALWAYS "general", even when a skill's description sounds close. Only "general" can look it up, so routing it to a skill means answering it from memory.
 
+A question that asks only *when* something already on file is due - "when is my next deadline", "what's due this week", "how long until the midterm" - is a LOOKUP, not a plan. The dates are in the memory field, so "general" can read them out. Never send one to a skill that builds a schedule: a plan allocates a span of time, and a date question contains no span to allocate. If the student also says how much time they have and asks for the work to be fitted into it ("plan my week, I have six hours"), that IS a plan, and the plan skill is right.
+
 Rules:
 1. "skill" must be exactly one of the skill names provided, or "general".
 2. Never invent a skill name. Never invent an argument name. Use only the arguments the chosen skill declares.

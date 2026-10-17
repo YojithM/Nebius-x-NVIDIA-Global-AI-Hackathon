@@ -238,6 +238,25 @@ export function fetchBrief(signal) {
 }
 
 /**
+ * What is on the student's Google Calendar (Step 12), read live.
+ *
+ * Kept off `/brief` on purpose: the brief is composed in code from files on this
+ * machine and cannot fail, while this one talks to Google and can. A slow or
+ * unreachable calendar delays its own section instead of the deadlines beside it.
+ *
+ * Returns { connected, configured, read_only, scope, scope_summary, calendar,
+ * horizon_days, events, lines, counts, cost_usd, source, error?, explanation? }.
+ *
+ * `connected: false` has two very different causes and both booleans are present
+ * so the panel never has to guess which one it is looking at: `configured: false`
+ * means the server has no OAuth client at all (a setup problem, not a button),
+ * while `configured: true` means the student just has not connected yet.
+ */
+export function fetchCalendar(signal) {
+  return request('/calendar', { signal })
+}
+
+/**
  * Delete one quiz from the record. The backend answers with the whole refreshed
  * state, exactly like a memory delete, so nothing has to be guessed at.
  *

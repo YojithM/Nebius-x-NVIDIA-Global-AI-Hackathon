@@ -485,6 +485,37 @@ body {
   margin-top: 3px;
 }
 
+/* ---------- the calendar half of the brief (Step 12) ---------- */
+
+/* Same list shape as the deadlines above it, with the bullet in the accent
+   colour: these lines come from somewhere else, and the difference should be
+   visible at a glance rather than only in the footnote below. */
+.brief-label + .brief-cal {
+  margin-top: 3px;
+}
+
+.brief-cal li::before {
+  color: var(--accent);
+}
+
+.brief-cal-foot {
+  margin: 6px 0 0;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+/* The connect link is the one action in the brief, so it looks like one. */
+.brief .connect {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.brief .connect:hover {
+  text-decoration: underline;
+}
+
 .brief-foot {
   margin: 8px 0 0;
   font-size: 10.5px;
@@ -841,6 +872,63 @@ body {
   cursor: default;
 }
 
+/* ---------- typing instead of talking ---------- */
+
+/* The box is the second way in, not a consolation prize: same width as the
+   transcript, same muted surface as the buttons above it, with the accent
+   reserved for the moment it has focus. */
+.typed {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.typed input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--surface-2);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.typed input::placeholder {
+  color: var(--muted);
+}
+
+.typed input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-color: var(--accent);
+}
+
+.typed input:disabled {
+  opacity: 0.6;
+}
+
+.typed button {
+  flex: 0 0 auto;
+  padding: 9px 14px;
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.typed button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* The page-read arm. Armed is a *state*, not a hover, and it has to be visible
    from across the room — it means the next question sends the page's text. */
 .arm.arm-on {
@@ -866,6 +954,76 @@ body {
   background: var(--surface-2);
   color: var(--muted);
   font-size: 12.5px;
+}
+
+/* ---------- a blocked microphone ---------- */
+
+/* This one is a notice with a task in it, so it is the only notice that gets
+   spacing, a paragraph of its own, and buttons inside it. It has to be read once
+   and followed, unlike the passing notices above it - so it looks like something
+   to act on rather than something to skim past. */
+.mic-help {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mic-help p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.mic-help strong {
+  color: var(--text);
+}
+
+/* The URL is the whole remedy, so it is selectable, monospaced, and wrapped
+   rather than clipped: a link they cannot copy by hand is not a fix. */
+.mic-url {
+  padding: 7px 9px;
+  border: 1px solid var(--surface-2);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.mic-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mic-actions button {
+  padding: 7px 12px;
+  border: 1px solid var(--surface-2);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mic-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.mic-steps {
+  color: var(--muted);
+}
+
+.mic-steps code {
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--surface);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
 }
 
 /* ---------- cost line (Step 10) ---------- */

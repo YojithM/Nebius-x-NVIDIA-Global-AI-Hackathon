@@ -375,10 +375,10 @@ class SmokeTest(unittest.TestCase):
         self.assertTrue(body["api_key_present"])
         self.assertEqual(body["memory"]["facts"], 0)
         self.assertEqual(body["page_reading"]["mode"], "explicit")
-        # Bumped to 11 with Step 11's last piece (the done-ness of the code is what
-        # this field reports; Step 7 is written and verified but not deployed, and
-        # has its own field for that).
-        self.assertEqual(body["step"], 11)
+        # Bumped to 12 with Step 12's read-only calendar (the done-ness of the code
+        # is what this field reports; Step 7 is written and verified but not
+        # deployed, and has its own field for that).
+        self.assertEqual(body["step"], 12)
         # Step 10's three additions are part of the contract the panel reads on
         # load: what this backend has spent, whether a demo is running, and
         # whether there is a panel to serve at /demo.
@@ -723,13 +723,16 @@ class BriefOverHTTP(unittest.TestCase):
         if complaint:
             raise AssertionError(complaint)
 
-    def test_the_plan_is_given_the_countdown_code_computed_not_the_chance_to_guess(self):
+    def test_a_date_question_is_answered_from_the_brief_with_no_model_call(self):
         """The measured bug behind this block, pinned over HTTP.
 
-        Live, asked "how many days until my midterm", the model answered 49 days for
-        a deadline the brief puts 28 days away. So the number the plan sees has to be
-        the number the brief computes - asserted here against `/brief` itself rather
-        than against a literal, because agreement is the property that matters.
+        Live, asked "how many days until my midterm", the model answered **49 days**
+        for a deadline the brief puts 28 days away - and later, routed to `plan` on
+        Ultra, it spent 1.9 s and $0.00098 asking how many hours the student had to
+        study instead of reading out a date it had been given. The date is now
+        answered from the brief itself, in code, before anything is spent: what this
+        asserts is that no model was called *and* that the number in the reply is
+        the number `/brief` computes - agreement with the panel, not a literal.
         """
         _, _, brief = self.server.request("GET", "/brief", token=TOKEN)
         deadline = brief["deadlines"][0]
@@ -744,6 +747,39 @@ class BriefOverHTTP(unittest.TestCase):
         self.assertEqual(status, 200, body)
         with self.stub.lock:
             calls = list(self.stub.calls)[before:]
+        self.assertEqual(calls, [], "the router and a model were called for a date lookup")
+        self.assertEqual(body["skill"], "brief")
+        self.assertEqual(body["cost_usd"], 0.0)
+        self.assertIn(deadline["due"], body["reply"])
+        self.assertIn("{0} days from now".format(deadline["days_left"]), body["reply"])
+        # And the == is anchored to the fixture, so a stale date cannot pass.
+        self.assertEqual(deadline["days_left"], 5)
+
+    def test_the_model_never_gets_the_chance_to_recompute_a_date(self):
+        """The half that still routes: a real request gets the computed numbers.
+
+        The dates block exists because a model asked for a countdown invented one
+        (49 days for a 28-day deadline). A date *question* is now answered in code,
+        but a request for work - a plan, a schedule, an explanation - still reaches
+        a model, and must still be handed the arithmetic rather than the chance to
+        guess it.
+        """
+        _, _, brief = self.server.request("GET", "/brief", token=TOKEN)
+        deadline = brief["deadlines"][0]
+        with self.stub.lock:
+            before = len(self.stub.calls)
+        status, _, body = self.server.request(
+            "POST",
+            "/turn",
+            body={
+                "transcript": "plan the next three evenings for my organic chemistry midterm",
+                "page_title": None,
+            },
+            token=TOKEN,
+        )
+        self.assertEqual(status, 200, body)
+        with self.stub.lock:
+            calls = list(self.stub.calls)[before:]
         self.assertEqual(len(calls), 2, "router, then one answer - no tools needed")
         prompt = " ".join(
             str(message.get("content") or "") for message in calls[1]["messages"]
@@ -751,8 +787,6 @@ class BriefOverHTTP(unittest.TestCase):
         self.assertIn("never recompute a date yourself", prompt)
         self.assertIn(deadline["due"], prompt)
         self.assertIn("{0} days away".format(deadline["days_left"]), prompt)
-        # And the model cannot make the prompt claim a date the brief does not have.
-        self.assertEqual(deadline["days_left"], 5)
 
     def brief(self):
         status, headers, body = self.server.request("GET", "/brief", token=TOKEN)
