@@ -75,6 +75,13 @@ test('a phrase that points at the page is a page read', () => {
     'what does this page say',
     'explain the page I am reading',
     'read this out loud',
+    // Naming a document and asking for judgement on it names something to read.
+    // These were missed at first, which made "review my resume" read no page at
+    // all - so the review had nothing to review.
+    'review my resume',
+    'critique my cover letter',
+    'look over my CV and tell me what is weak',
+    'check my essay',
   ]) {
     assert.equal(utteranceReadsPage(text), true, `"${text}" should read the page`)
   }
@@ -88,6 +95,8 @@ test('a phrase that does not point at the page is not one', () => {
     'analyze my essay',
     'plan my week',
     'remember my midterm is on the 12th',
+    'review my notes from last week',
+    'what should I put on my resume',
     '',
     null,
   ]) {

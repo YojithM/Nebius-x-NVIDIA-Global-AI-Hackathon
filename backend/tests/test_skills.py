@@ -546,7 +546,8 @@ class TestShippedSkills(unittest.TestCase):
             s.name for s in registry.skills.values() if "page" in s.context
         )
         self.assertEqual(
-            with_page, ["explain", "page_summary", "plan", "quiz", "rephrase"]
+            with_page,
+            ["explain", "page_summary", "plan", "quiz", "rephrase", "resume_review"],
         )
         # study_breakdown is pure planning and remembers nothing, so it asks for
         # nothing - the smallest context that does the job.

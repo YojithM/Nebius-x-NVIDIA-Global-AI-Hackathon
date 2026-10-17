@@ -741,6 +741,7 @@ backend/             the agent backend (Steps 2+). Pure stdlib, no pip install n
 skills/              skills as SKILL.md files, not code
   explain/           explains a concept, or one part of the page you asked it to read
   page_summary/      summarises the page you are on: what it says, and what matters
+  resume_review/     judges a resume you are on: the strength, the gap, the rewording
   rephrase/          restates a passage: yours, the page's, or its own last reply
   plan/              fits work into the time you have before a deadline (Ultra)
   study_breakdown/   the reference skill: proves router -> args -> prompt end to end

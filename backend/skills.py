@@ -13,8 +13,11 @@ is documentation for humans and for the agent that authored it.
 
 Optional frontmatter beyond the routing fields: `tier` (which model runs it),
 `action` (a handler from a reviewed allowlist, for skills with side effects),
-`requires_confirmation`, and `context` (which extra material the skill may be
-shown - the invoked page text, the previous reply, or the student's memory).
+`requires_confirmation`, `context` (which extra material the skill may be shown
+- the invoked page text, the previous reply, or the student's memory), and
+`verify_source_numbers` (true for a skill that rewrites the student's own words:
+the reply's quoted rewrites are checked against the document, and a number in one
+that the document does not contain is called out in the reply).
 
 The frontmatter is deliberately Hermes-compatible: same file name, same `name`
 and `description` keys, tags under `metadata.hermes.tags`. So a skill written
@@ -139,6 +142,10 @@ class Skill:
     prompt_template: str
     body: str
     path: Path
+    # Ask the server to check the reply's quoted rewrites against the document they
+    # came from, and to say so when a number in one of them is not in the source.
+    # Off by default: only a skill that rewrites the student's own words needs it.
+    verify_source_numbers: bool = False
     schema_warnings: List[str] = field(default_factory=list)
 
     @property
@@ -320,6 +327,13 @@ def load_skill(path: Path, tiers: Optional[List[str]] = None) -> Skill:
             f"got {confirmation!r}"
         )
 
+    verify_numbers = meta.get("verify_source_numbers", False)
+    if not isinstance(verify_numbers, bool):
+        raise SkillError(
+            f"{_label(path)}: verify_source_numbers must be true or false, "
+            f"got {verify_numbers!r}"
+        )
+
     action = str(meta.get("action") or "prompt").strip().lower()
     if action not in SKILL_ACTIONS:
         raise SkillError(
@@ -401,6 +415,7 @@ def load_skill(path: Path, tiers: Optional[List[str]] = None) -> Skill:
         tools=[str(t) for t in tools],
         tags=[str(t) for t in tags],
         context=tuple(context),
+        verify_source_numbers=verify_numbers,
         input_schema=_parse_schema(schema_block, path),
         prompt_template=prompt,
         body=body,

@@ -64,7 +64,7 @@ export async function getPageContext() {
 // rule is a smell; it is here because the panel has to decide whether to touch
 // the page *before* it has anywhere to send it.
 const PAGE_WORDS =
-  /\b(?:this|the|that|current|whole|entire)\s+(?:page|article|screen|passage|paragraph|section|pdf|document|doc|text|prompt|problem|question|exercise|assignment)\b|\b(?:what (?:i'?m|im|you'?re|youre) (?:reading|looking at))\b|\b(?:on|from) (?:my|the) screen\b|\bread (?:this|that|it) (?:to me|out loud|aloud)\b|\b(?:analy[sz]e|summari[sz]e|sum up|sk[ie]m|review)\s+(?:this|that|these|those)\b|\bwhat (?:does|is) (?:this|that) (?:say|about)\b|\bthe gist of (?:this|that)\b/i
+  /\b(?:this|the|that|current|whole|entire)\s+(?:page|article|screen|passage|paragraph|section|pdf|document|doc|text|prompt|problem|question|exercise|assignment)\b|\b(?:what (?:i'?m|im|you'?re|youre) (?:reading|looking at))\b|\b(?:on|from) (?:my|the) screen\b|\bread (?:this|that|it) (?:to me|out loud|aloud)\b|\b(?:analy[sz]e|summari[sz]e|sum up|sk[ie]m|review)\s+(?:this|that|these|those)\b|\bwhat (?:does|is) (?:this|that) (?:say|about)\b|\bthe gist of (?:this|that)\b|\b(?:review|critique|check|proofread|go over|look over|look at|improve|fix up|tighten up)\s+(?:my|this|the|our)\s+(?:resume|cv|curriculum vitae|cover letter|application|essay|draft|write-?up|report|paper|thesis|statement of purpose|sop)\b/i
 
 /**
  * The origins we ask for. Both schemes, because a study page is as likely to be

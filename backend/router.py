@@ -52,7 +52,11 @@ The "general" path can also draft a new skill file for our own library, and no s
 
 A request for something that changes over time - a version, a price, a date, a score, a schedule, a current release - is ALWAYS "general", even when a skill's description sounds close. Only "general" can look it up, so routing it to a skill means answering it from memory.
 
-A question that asks only *when* something already on file is due - "when is my next deadline", "what's due this week", "how long until the midterm" - is a LOOKUP, not a plan. The dates are in the memory field, so "general" can read them out. Never send one to a skill that builds a schedule: a plan allocates a span of time, and a date question contains no span to allocate. If the student also says how much time they have and asks for the work to be fitted into it ("plan my week, I have six hours"), that IS a plan, and the plan skill is right.
+A question that asks only *when* something already on file is due - "when is my next deadline", "what's due this week", "how long until the midterm" - is a LOOKUP, not a plan and not a summary. The dates are in the memory field, so "general" can read them out. Never send one to a skill that builds a schedule or to one that works from a page: a plan allocates a span of time and a date question contains no span to allocate, and a page being open does not make the question about the page. If the student also says how much time they have and asks for the work to be fitted into it ("plan my week, I have six hours"), that IS a plan, and the plan skill is right.
+
+A page being open is not a request about it. Skills that work from a page are for questions that POINT at it - "analyze this page", "what does this article say". A question that happens to be asked while a page is open ("quiz me on chapter 4", "what's due this week", "remember I liked the second one") is about what they SAID, not about what they are looking at.
+
+Describing and judging are different requests, and the skills that work from a document are split that way. "Summarise this", "what does it say", "give me the gist" want a description. "Review my resume", "what's wrong with my CV", "is this good enough for X", "make this better" want judgement on a document they are applying with - a review is never a summary, even when the document is open on screen and the summary skill sounds close.
 
 Rules:
 1. "skill" must be exactly one of the skill names provided, or "general".

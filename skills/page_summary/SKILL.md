@@ -8,7 +8,7 @@ tier: super
 requires_confirmation: false
 context: [page]
 when_to_use: "the student points at the page in front of them and asks what it says or what is in it — 'analyze this page', 'summarise this', 'summarize this article', 'what does this page say', 'give me the gist of this', 'skim this and tell me the point', 'tl;dr this page'"
-not_for: "a request to explain a concept in depth (that is explain), to restate wording without changing the meaning (rephrase), to plan, to quiz them, or to remember something. Also not for summarising something they have not pointed at — a book, a chapter, or a topic in the abstract has no page behind it, and this skill summarises a page it was given"
+not_for: "a request to explain a concept in depth (that is explain), to restate wording without changing the meaning (rephrase), to plan, to remember something, or to be tested ("quiz me on this page" is quiz, however page-shaped it sounds). Not for a question about the student's own schedule or deadlines ("what's due this week") — a page being open does not make that a request about the page, and the answer is in their files. And not for a request to *judge* an application document — 'review my resume', 'critique my CV', 'is my resume good for this role' is resume_review, which gives an opinion on it rather than describing what is in it. Also not for summarising something they have not pointed at — a book, a chapter, or a topic in the abstract has no page behind it, and this skill summarises a page it was given"
 tools: []
 metadata:
   hermes:

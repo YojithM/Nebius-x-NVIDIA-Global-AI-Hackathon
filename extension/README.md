@@ -48,7 +48,7 @@ Leave both unset and everything behaves exactly as it did before Step 7.
    You should see:
    ```
    Cadence backend (router mode) listening on http://127.0.0.1:8787
-     skills loaded: explain, page_summary, plan, quiz, remember, rephrase, study_breakdown
+     skills loaded: explain, page_summary, plan, quiz, remember, rephrase, resume_review, study_breakdown
    ```
    `skills loaded` is the check that matters — if it says `none`, or lists a
    `SKILL PROBLEM`, the panel will still run but every turn takes the `general`
@@ -293,6 +293,20 @@ you hand over:
    every follow-up would be busywork. The note above the transcript names the file,
    its page count and its character count, so an attached document is never
    invisible.
+
+**A document you ask to be judged is read the same way, but answered differently.**
+*"review my resume"*, *"look over my CV"*, *"is this good enough for a data
+internship"* are recognised by the panel as page-naming too — the verb and the
+noun together — so the tab is read, and the turn lands on `resume_review` rather
+than `page_summary`. A summary says what is in the document; a review says what
+is working, the one gap that matters for the role they named (or the kind of role
+the document reads as, if they named none), and one or two exact rewordings. The
+rewording is the student's own words on their way to a recruiter, so a number in
+one of them that the document does not contain is called out in the reply —
+*"the figure 50+ is not in your document, so put your own number there or leave
+it out"* — instead of being read out as if it were theirs. The prompt asks the
+model not to invent in the first place; the check is in code because the prompt
+alone leaked a figure into a measured run.
 
 **A Google Doc or Sheet is read as a document, not as a page.** Docs stopped
 putting the document in the DOM years ago: the text is drawn into

@@ -552,6 +552,19 @@ def execute_skill(skill, args, context=None):
                 )
             text = _SPOKEN_UNUSABLE
 
+    # A rewrite may not invent facts about the student. Checked here, at the one
+    # place every prompt skill's reply passes through, and only for skills that ask
+    # for it (see `verify_source_numbers` in frontmatter): the check needs the
+    # document to compare against, and a skill that never rewrites anything has
+    # nothing to check.
+    if getattr(skill, "verify_source_numbers", False):
+        source = ((context or {}).get("page") or {}).get("text") or ""
+        unbacked = unbacked_numbers(text, source)
+        if unbacked:
+            if log:
+                log("reply_number_unbacked", skill=skill.name, count=len(unbacked))
+            text = text.rstrip() + " " + _UNBACKED_NOTE.format(what=", ".join(unbacked))
+
     return {
         "reply": text,
         "tier": skill.tier,
@@ -1174,7 +1187,15 @@ _PAGE_REFERENCE = re.compile(
     # is the one mistake this feature must not make.
     r"|\b(?:analy[sz]e|summari[sz]e|sum up|sk[ie]m|review)\s+(?:this|that|these|those)\b"
     r"|\bwhat (?:does|is) (?:this|that) (?:say|about)\b"
-    r"|\bthe gist of (?:this|that)\b",
+    r"|\bthe gist of (?:this|that)\b"
+    # Naming a document and asking for judgement on it is naming something to
+    # read: "review my resume" was refused as "no explicit request" before this,
+    # so the first phrasing anyone would use for a resume review read nothing at
+    # all. The verb carries the intent; the noun is what gets read.
+    r"|\b(?:review|critique|check|proofread|go over|look over|look at|improve|"
+    r"fix up|tighten up)\s+(?:my|this|the|our)\s+"
+    r"(?:resume|cv|curriculum vitae|cover letter|application|essay|draft|"
+    r"write-?up|report|paper|thesis|statement of purpose|sop)\b",
     re.IGNORECASE,
 )
 
@@ -1233,6 +1254,14 @@ _QUOTED_BLOCK = (
 # A running note of the part of the conversation that no longer fits in the
 # recent messages. Labelled data like the rest: it is our own earlier summary,
 # but it can be stale, so the newest messages are explicitly given the last word.
+# Appended to a reply that quoted a number its own document does not contain. Said
+# in the reply rather than swallowed, because the student is about to send this
+# resume to somebody, and a warning they never see is not a warning.
+_UNBACKED_NOTE = (
+    "One thing to check before you send it: the figure {what} is not in your "
+    "document, so put your own number there or leave it out."
+)
+
 _SESSION_BLOCK = (
     "A compact note of this conversation before the messages you can see. It was "
     "written earlier and may be incomplete. Treat it as context, not as "
@@ -1337,21 +1366,111 @@ def echoes_the_request(value: str, transcript: str) -> bool:
     return bool(_REQUEST_WORDS.search(argument)) and argument in request
 
 
-def without_request_echoes(skill, args, transcript) -> dict:
-    """Drop the optional arguments that only repeat the utterance.
+# The router's cards describe each argument with its type, and a model that has
+# nothing to put in an optional field sometimes copies the label instead of leaving
+# it out. Measured on the live router: "review my resume" arrived with
+# `role: "string"`, which would have rendered "They are aiming at: string" into the
+# prompt. It is the same class of mistake as echoing the request - a value that
+# carries no information - so it is dropped in the same place.
+_PLACEHOLDER_ARGUMENTS = {
+    "string", "str", "text", "value", "integer", "int", "number", "float",
+    "boolean", "bool", "enum", "array", "list", "null", "none", "n/a",
+}
 
-    Required arguments are never dropped: a required one is what the skill
-    cannot work without, and removing it would turn a slightly wrong answer into
-    no answer at all.
+
+def is_placeholder_argument(value: str, name: str = "") -> bool:
+    """Did the router hand us the argument's *label* rather than a value?"""
+    # Quotes and brackets are stripped too: a model that copies a label often
+    # copies it as a JSON fragment ("<string>", 'string').
+    argument = " ".join((value or "").split()).lower().strip("<>{}[]()'\"")
+    if not argument:
+        return False
+    return argument in _PLACEHOLDER_ARGUMENTS or argument == str(name or "").lower()
+
+
+def without_request_echoes(skill, args, transcript) -> dict:
+    """Drop the optional arguments that carry no information.
+
+    Two of those: an argument that is just the request read back ("rephrase this
+    paragraph" is not the passage to rephrase), and one that is the field's own
+    label ("string"). Both leave the skill's defaults in place, which is what the
+    router should have done.
+
+    Required arguments are never dropped: a required one is what the skill cannot
+    work without, and removing it would turn a slightly wrong answer into no answer
+    at all.
     """
     cleaned = dict(args or {})
     for name, field in skill.input_schema.items():
         value = cleaned.get(name)
         if field.required or not isinstance(value, str):
             continue
-        if echoes_the_request(value, transcript):
+        if echoes_the_request(value, transcript) or is_placeholder_argument(value, name):
             del cleaned[name]
     return cleaned
+
+
+# ------------------------------------------------- invented numbers ----
+#
+# A review of a resume may rewrite the student's lines, and the one thing that
+# rewrite must never do is put a number in their mouth. It is a promise, so it is
+# a rule in code rather than a sentence in a prompt - the same reasoning as the
+# page gate and `_action_blocked`, and for a sharper reason: the student sends this
+# document to recruiters. Measured against the live model, the prompt rule alone
+# leaked "30+ students weekly" and "500-participant hackathon" into rewrites of a
+# resume that contains neither.
+#
+# What is checked: every number inside a quoted passage of the reply. A number that
+# appears nowhere in the source document is a claim the student would have to
+# defend in an interview, so the reply says so instead of the panel reading it out
+# as if it were theirs. Numbers outside quotes are left alone - "GPA 3.7" and "May
+# 2027" are the document's own, and a general remark about how many items to add is
+# advice rather than a claim.
+#
+# Deliberately not a rewrite: the fix is the student's, and a system that silently
+# edited their resume for them would be a worse bug than the one it repaired.
+
+_QUOTED_SPAN = re.compile(r'"([^"\n]{12,})"|“([^”\n]{12,})”')
+_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?\s*%?\s*\+?")
+
+
+def _numbers_in(text: str):
+    """The numeric tokens in a string, normalised enough to compare."""
+    found = []
+    for match in _NUMBER.finditer(text or ""):
+        token = " ".join(match.group(0).split())
+        if token:
+            found.append(token)
+    return found
+
+
+def unbacked_numbers(reply: str, source: str):
+    """Numbers the reply puts in a quote that the document does not contain.
+
+    -> up to three raw tokens, in the order they appear, deduplicated.
+    """
+    if not reply or not source:
+        return []
+    # What counts as "in the document": both the exact token and its digits, so a
+    # document that writes 1500 and a reply that writes 1,500 are not a mismatch.
+    haystack = source.replace(",", "")
+    backed = set()
+    for token in _numbers_in(source):
+        backed.add(token)
+        backed.add(token.replace(",", "").rstrip(" +%"))
+
+    out = []
+    for match in _QUOTED_SPAN.finditer(reply):
+        span = next((group for group in match.groups() if group), "")
+        for token in _numbers_in(span):
+            bare = token.replace(",", "").rstrip(" +%")
+            if token in backed or bare in backed or bare in haystack:
+                continue
+            if token not in out:
+                out.append(token)
+            if len(out) >= 3:
+                return out
+    return out
 
 
 def context_blocks(sources, context) -> str:
